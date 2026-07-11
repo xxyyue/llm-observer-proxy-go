@@ -1,0 +1,10 @@
+/llm-observer-proxy
+/artifacts/
+/config/models.json
+/.env
+*.log
+coverage.out
+
+# Local-only notes.
+docs/api-design-notes.md
+docs/releasing.md

@@ -1,0 +1,193 @@
+// SPDX-License-Identifier: Apache-2.0
+
+package control
+
+import (
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"strconv"
+	"strings"
+
+	"github.com/xxyyue/llm-observer-proxy-go/internal/proxy"
+)
+
+type Server struct {
+	manager *proxy.Manager
+}
+
+func NewServer(manager *proxy.Manager) *Server {
+	return &Server{manager: manager}
+}
+
+func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	if request.Method == http.MethodGet && request.URL.Path == "/healthz" {
+		writeJSON(writer, http.StatusOK, map[string]any{"ok": true})
+		return
+	}
+	if request.Method == http.MethodGet && request.URL.Path == "/api/proxies" {
+		writeJSON(writer, http.StatusOK, map[string]any{"items": s.manager.List()})
+		return
+	}
+	runID, action, ok := parseRunPath(request.URL.Path)
+	if !ok {
+		writeJSON(writer, http.StatusNotFound, map[string]any{"error": "not found"})
+		return
+	}
+	if err := proxy.ValidateRunID(runID); err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	switch {
+	case action == "proxy" && request.Method == http.MethodPost:
+		s.create(writer, request, runID)
+	case action == "proxy" && request.Method == http.MethodGet:
+		if record, found := s.manager.Get(runID); found {
+			writeJSON(writer, http.StatusOK, record)
+		} else {
+			writeJSON(writer, http.StatusNotFound, map[string]any{"error": "Proxy not found for run_id " + runID})
+		}
+	case action == "proxy" && request.Method == http.MethodDelete:
+		if s.manager.Stop(runID) {
+			writeJSON(writer, http.StatusOK, map[string]any{"ok": true, "run_id": runID})
+		} else {
+			writeJSON(writer, http.StatusNotFound, map[string]any{"error": "Proxy not found for run_id " + runID})
+		}
+	case action == "history" && request.Method == http.MethodGet:
+		s.history(writer, request, runID)
+	case action == "conversation" && request.Method == http.MethodGet:
+		s.conversation(writer, runID)
+	default:
+		writeJSON(writer, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+	}
+}
+
+func (s *Server) create(writer http.ResponseWriter, request *http.Request, runID string) {
+	var payload map[string]any
+	decoder := json.NewDecoder(io.LimitReader(request.Body, 1<<20))
+	if err := decoder.Decode(&payload); err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]any{"error": "request body must contain valid JSON"})
+		return
+	}
+	if payload == nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]any{"error": "request body must be a JSON object"})
+		return
+	}
+	port, err := optionalPort(payload["port"])
+	if err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	bindHost := "127.0.0.1"
+	if value := payload["bind_host"]; value != nil {
+		text, ok := value.(string)
+		if !ok {
+			writeJSON(writer, http.StatusBadRequest, map[string]any{"error": "bind_host must be a string"})
+			return
+		}
+		if strings.TrimSpace(text) != "" {
+			bindHost = strings.TrimSpace(text)
+		}
+	}
+	instance, err := s.manager.Create(runID, bindHost, port)
+	if err != nil {
+		status := http.StatusBadRequest
+		if strings.Contains(strings.ToLower(err.Error()), "already exists") {
+			status = http.StatusConflict
+		}
+		writeJSON(writer, status, map[string]any{"error": err.Error()})
+		return
+	}
+	record, _ := s.manager.Get(instance.RunID)
+	writeJSON(writer, http.StatusCreated, record)
+}
+
+func (s *Server) history(writer http.ResponseWriter, request *http.Request, runID string) {
+	snapshot, found, err := s.manager.History(runID)
+	if err != nil {
+		writeJSON(writer, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	if !found {
+		writeJSON(writer, http.StatusNotFound, map[string]any{"error": "Proxy not found for run_id " + runID})
+		return
+	}
+	if raw := strings.TrimSpace(request.URL.Query().Get("limit")); raw != "" {
+		limit, err := strconv.Atoi(raw)
+		if err != nil {
+			writeJSON(writer, http.StatusBadRequest, map[string]any{"error": "invalid limit"})
+			return
+		}
+		if limit < 1 {
+			limit = 1
+		}
+		if limit > 200 {
+			limit = 200
+		}
+		// Re-marshal through []any so the concrete observer.Event slice can be limited without coupling packages.
+		encoded, _ := json.Marshal(snapshot["items"])
+		var generic []any
+		_ = json.Unmarshal(encoded, &generic)
+		if len(generic) > limit {
+			generic = generic[len(generic)-limit:]
+		}
+		snapshot["items"] = generic
+		snapshot["count"] = len(generic)
+	}
+	writeJSON(writer, http.StatusOK, snapshot)
+}
+
+func (s *Server) conversation(writer http.ResponseWriter, runID string) {
+	snapshot, found, err := s.manager.Conversation(runID)
+	if err != nil {
+		writeJSON(writer, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	if !found {
+		writeJSON(writer, http.StatusNotFound, map[string]any{"error": "Proxy not found for run_id " + runID})
+		return
+	}
+	writeJSON(writer, http.StatusOK, snapshot)
+}
+
+func parseRunPath(path string) (string, string, bool) {
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) != 4 || parts[0] != "api" || parts[1] != "runs" {
+		return "", "", false
+	}
+	if parts[3] != "proxy" && parts[3] != "history" && parts[3] != "conversation" {
+		return "", "", false
+	}
+	return parts[2], parts[3], true
+}
+
+func optionalPort(value any) (int, error) {
+	if value == nil {
+		return 0, nil
+	}
+	var number float64
+	switch typed := value.(type) {
+	case float64:
+		number = typed
+	case string:
+		parsed, err := strconv.Atoi(strings.TrimSpace(typed))
+		if err != nil {
+			return 0, errors.New("port must be an integer")
+		}
+		number = float64(parsed)
+	default:
+		return 0, errors.New("port must be an integer")
+	}
+	port := int(number)
+	if port < 1 || port > 65535 {
+		return 0, errors.New("port must be between 1 and 65535")
+	}
+	return port, nil
+}
+
+func writeJSON(writer http.ResponseWriter, status int, payload any) {
+	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+	writer.WriteHeader(status)
+	_ = json.NewEncoder(writer).Encode(payload)
+}

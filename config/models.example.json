@@ -1,0 +1,12 @@
+{
+  "llm_observer_proxy": {
+    "base_url": "https://api.openai.com",
+    "api_key": "os.environ/OPENAI_API_KEY"
+  },
+  "models": [
+    {
+      "id": "gpt-5.5",
+      "upstream_api": "openai"
+    }
+  ]
+}
