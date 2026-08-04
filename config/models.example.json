@@ -1,7 +1,10 @@
 {
   "llm_observer_proxy": {
     "base_url": "https://api.openai.com",
-    "api_key": "os.environ/OPENAI_API_KEY"
+    "api_key": "os.environ/OPENAI_API_KEY",
+    "network_config": {
+      "max_retries": 6
+    }
   },
   "models": [
     {

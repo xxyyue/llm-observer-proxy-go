@@ -18,7 +18,8 @@ import (
 const defaultCatalog = `{
   "llm_observer_proxy": {
     "base_url": "https://api.openai.com",
-    "api_key": "os.environ/OPENAI_API_KEY"
+    "api_key": "os.environ/OPENAI_API_KEY",
+    "network_config": {"max_retries": 6}
   },
   "models": [
     {"id": "gpt-5.5", "upstream_api": "openai"}
@@ -26,8 +27,9 @@ const defaultCatalog = `{
 }`
 
 type ProxySettings struct {
-	BaseURL string `json:"base_url"`
-	APIKey  string `json:"api_key"`
+	BaseURL       string                 `json:"base_url"`
+	APIKey        string                 `json:"api_key"`
+	NetworkConfig *schemas.NetworkConfig `json:"network_config,omitempty"`
 }
 
 type Model struct {
@@ -165,12 +167,7 @@ func NewAccount(c *Catalog) *Account {
 			Weight: 1,
 		}}
 		account.configs[provider] = &schemas.ProviderConfig{
-			NetworkConfig: schemas.NetworkConfig{
-				BaseURL:                    c.Settings.BaseURL,
-				AllowPrivateNetwork:        true,
-				InsecureSkipVerify:         false,
-				StreamIdleTimeoutInSeconds: 120,
-			},
+			NetworkConfig: providerNetworkConfig(c.Settings),
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
 				Concurrency: 256,
 				BufferSize:  1024,
@@ -178,6 +175,24 @@ func NewAccount(c *Catalog) *Account {
 		}
 	}
 	return account
+}
+
+// providerNetworkConfig enables bounded Bifrost retries by default.  A catalog
+// can explicitly provide network_config (including max_retries: 0) to override
+// this policy.  CTF target access remains allowed and TLS verification remains
+// enabled regardless of catalog input.
+func providerNetworkConfig(settings ProxySettings) schemas.NetworkConfig {
+	config := schemas.NetworkConfig{MaxRetries: 6}
+	if settings.NetworkConfig != nil {
+		config = *settings.NetworkConfig
+	}
+	config.BaseURL = settings.BaseURL
+	config.AllowPrivateNetwork = true
+	config.InsecureSkipVerify = false
+	if config.StreamIdleTimeoutInSeconds == 0 {
+		config.StreamIdleTimeoutInSeconds = 120
+	}
+	return config
 }
 
 func (a *Account) GetConfiguredProviders() ([]schemas.ModelProvider, error) {

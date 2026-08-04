@@ -129,7 +129,10 @@ A model catalog has this shape:
 {
   "llm_observer_proxy": {
     "base_url": "https://api.openai.com",
-    "api_key": "os.environ/OPENAI_API_KEY"
+    "api_key": "os.environ/OPENAI_API_KEY",
+    "network_config": {
+      "max_retries": 6
+    }
   },
   "models": [
     {
@@ -140,7 +143,7 @@ A model catalog has this shape:
 }
 ```
 
-`id` is the public model name accepted by the data plane. `upstream_api` must be `openai` or `anthropic` for catalog compatibility, but the request path selects the adapter at runtime. Optional per-million-token prices under `pricing` are used for local cost estimates. Other model properties are ignored. `api_key` accepts a literal value, `os.environ/NAME`, `env.NAME`, or `${NAME}`. All catalog models currently share one upstream `base_url` and credential. See `config/models.example.json` for a complete example.
+`id` is the public model name accepted by the data plane. `upstream_api` must be `openai` or `anthropic` for catalog compatibility, but the request path selects the adapter at runtime. Optional per-million-token prices under `pricing` are used for local cost estimates. `api_key` accepts a literal value, `os.environ/NAME`, `env.NAME`, or `${NAME}`. All catalog models currently share one upstream `base_url` and credential. `llm_observer_proxy.network_config` is passed to Bifrost; `max_retries` defaults to `6` when omitted and may be explicitly set to `0` to disable gateway retries. See `config/models.example.json` for a complete example.
 
 The legacy top-level catalog key `llm_proxy` remains accepted when `llm_observer_proxy` is absent.
 
