@@ -92,12 +92,20 @@ reads the full event history, not the latest conversation snapshot.
 - If all request start times are present, events are sorted by start time with a
   stable tie-break. Overlaps are reported; this is not a claim of causal ordering
   among concurrent agents. Missing times retain source-log order.
+- A requested stream captured as a complete JSON response by a compatibility
+  gateway is treated as buffered JSON, rather than as missing SSE. OpenAI-style
+  `prompt_tokens` remains an inclusive total even on an Anthropic request route.
 - The final Responses stream object takes precedence over accumulated deltas.
   Tool argument strings must parse to JSON objects. Broken arguments remain in
   diagnostics/unmapped metadata, never silently become an empty object.
 - Only readable reasoning returned by the provider becomes `reasoning_content`.
   Signatures and encrypted/redacted reasoning are not invented readable thoughts.
-- Known usage is counted once per recorded exchange. Anthropic cache-read and
+- Legacy logs may reuse an exchange ID across retries or duplicate log entries.
+  Every source record is retained, assigned a stable `source_record_index` before
+  sorting, and reported with `reused_exchange_id`; strict mode rejects this
+  ambiguity. Totals are source-record totals and may include duplicate logging,
+  not a verified count of distinct provider inferences.
+- Known usage is counted once per source record. Anthropic cache-read and
   cache-creation tokens are included in ATIF's total prompt tokens. Missing usage
   is omitted, with coverage recorded in `final_metrics.extra`.
 - Recorded local cost estimates are preserved without repricing, with provenance.

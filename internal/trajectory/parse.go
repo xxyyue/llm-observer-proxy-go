@@ -177,7 +177,7 @@ func (b *builder) request(value any) []message {
 		case "function_call_output":
 			result = append(result, message{role: "tool", text: b.content(item["output"]), resultID: str(item["call_id"]), raw: item})
 		case "reasoning": // preserve without inventing a second agent invocation
-			b.fragments = append(b.fragments, map[string]any{"exchange_id": b.exchange, "kind": "request_reasoning", "value": item})
+			b.fragments = append(b.fragments, map[string]any{"exchange_id": b.exchange, "source_record_index": b.recordIndex, "kind": "request_reasoning", "value": item})
 		default:
 			b.unmapped("unsupported_input", "Responses input item could not be mapped.", raw)
 		}
@@ -209,7 +209,9 @@ func (b *builder) response(event observer.Event) (message, map[string]any, strin
 	normalized := observer.Normalize(event.RequestJSON, response, body, event.Path, event.Stream, nil)
 	usage := object(response["usage"])
 	responseID := str(response["id"])
-	complete := !event.Stream
+	// Legacy capture layers may buffer a requested stream into a complete JSON
+	// response. The request stream flag does not describe the captured transport.
+	complete := !event.Stream || response != nil
 	if event.Stream && response == nil {
 		usage = map[string]any{}
 		var terminal map[string]any
@@ -318,7 +320,7 @@ func (b *builder) response(event observer.Event) (message, map[string]any, strin
 				m.reasoning += str(object(content)["text"])
 			}
 			if part["encrypted_content"] != nil {
-				b.fragments = append(b.fragments, map[string]any{"exchange_id": b.exchange, "kind": "opaque_reasoning", "value": part})
+				b.fragments = append(b.fragments, map[string]any{"exchange_id": b.exchange, "source_record_index": b.recordIndex, "kind": "opaque_reasoning", "value": part})
 			}
 		case "signature_delta": // signature is metadata, not reasoning
 		default:

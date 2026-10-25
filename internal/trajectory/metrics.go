@@ -41,7 +41,9 @@ func (b *builder) metrics(event observer.Event, usage map[string]any) map[string
 	output, outputOK := b.token(first(usage["completion_tokens"], usage["output_tokens"]))
 	cached, cachedOK := b.token(first(usage["cache_read_input_tokens"], object(usage["prompt_tokens_details"])["cached_tokens"], object(usage["input_tokens_details"])["cached_tokens"]))
 	creation, creationOK := b.token(usage["cache_creation_input_tokens"])
-	if strings.HasSuffix(event.Path, "/messages") && inputOK {
+	// Compatibility gateways may return OpenAI usage even on /v1/messages.
+	// prompt_tokens is already an inclusive total and must not gain caches twice.
+	if strings.HasSuffix(event.Path, "/messages") && usage["prompt_tokens"] == nil && inputOK {
 		// Anthropic input_tokens excludes cache creation/read; ATIF includes both.
 		input += cached + creation
 	}

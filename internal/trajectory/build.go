@@ -12,6 +12,7 @@ import (
 type builder struct {
 	document        Document
 	exchange        string
+	recordIndex     int
 	diagnostics     []Diagnostic
 	fragments       []any
 	calls           map[string][]int
@@ -24,11 +25,11 @@ type builder struct {
 }
 
 func (b *builder) issue(code, text string) {
-	b.diagnostics = append(b.diagnostics, Diagnostic{Code: code, Message: text, ExchangeID: b.exchange})
+	b.diagnostics = append(b.diagnostics, Diagnostic{Code: code, Message: text, ExchangeID: b.exchange, SourceRecordIndex: b.recordIndex})
 }
 func (b *builder) unmapped(code, text string, value any) {
 	b.issue(code, text)
-	b.fragments = append(b.fragments, map[string]any{"exchange_id": b.exchange, "kind": code, "value": value})
+	b.fragments = append(b.fragments, map[string]any{"exchange_id": b.exchange, "source_record_index": b.recordIndex, "kind": code, "value": value})
 }
 
 // Build reconstructs only observable interactions. When context relationships are
@@ -53,13 +54,23 @@ func Build(events []observer.Event, options Options, initial []Diagnostic) (*Doc
 			allTimed = false
 		}
 	}
+	type indexedEvent struct {
+		event  observer.Event
+		record int
+	}
+	ordered := make([]indexedEvent, len(events))
+	for index, event := range events {
+		ordered[index] = indexedEvent{event: event, record: index + 1}
+	}
 	if allTimed {
-		sort.SliceStable(events, func(i, j int) bool { return events[i].StartedAtMS < events[j].StartedAtMS })
+		sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].event.StartedAtMS < ordered[j].event.StartedAtMS })
 	}
 	seenExchanges := map[string]bool{}
 	var maxCompleted int64
 	latestResponseID := ""
-	for index, event := range events {
+	for index, entry := range ordered {
+		event := entry.event
+		b.recordIndex = entry.record
 		b.exchange = event.ExchangeID
 		if event.RunID != "" {
 			if b.document.SessionID == "" {
@@ -69,7 +80,7 @@ func Build(events []observer.Event, options Options, initial []Diagnostic) (*Doc
 			}
 		}
 		if event.ExchangeID != "" && seenExchanges[event.ExchangeID] {
-			return nil, fmt.Errorf("duplicate exchange_id %q in source log", event.ExchangeID)
+			b.issue("reused_exchange_id", "Source records reuse an exchange ID; every record is preserved and totals may include duplicate logging.")
 		}
 		seenExchanges[event.ExchangeID] = true
 		concurrent := event.StartedAtMS > 0 && event.StartedAtMS < maxCompleted
@@ -129,7 +140,7 @@ func Build(events []observer.Event, options Options, initial []Diagnostic) (*Doc
 		failed := event.Error != nil || (event.ResponseStatus != nil && *event.ResponseStatus >= 400)
 		if failed {
 			b.issue("failed_exchange", "An observed request failed; it is retained as an error, not an assistant answer.")
-			b.fragments = append(b.fragments, map[string]any{"kind": "failed_exchange", "exchange_id": event.ExchangeID, "status": event.ResponseStatus, "error": event.Error, "response": decodeBody(event.ResponseJSON, event.ResponseBody), "body": event.ResponseBody, "metrics": metrics})
+			b.fragments = append(b.fragments, map[string]any{"kind": "failed_exchange", "exchange_id": event.ExchangeID, "source_record_index": b.recordIndex, "status": event.ResponseStatus, "error": event.Error, "response": decodeBody(event.ResponseJSON, event.ResponseBody), "body": event.ResponseBody, "metrics": metrics})
 		}
 		if response.text != "" || len(response.tools) > 0 || response.reasoning != "" {
 			b.add(response, true, event)
@@ -166,7 +177,9 @@ func Build(events []observer.Event, options Options, initial []Diagnostic) (*Doc
 		}
 		for _, call := range step.Tools {
 			if !observed[call.ID] {
-				b.exchange = ""
+				meta := step.Extra[Namespace].(map[string]any)
+				b.exchange = str(meta["exchange_id"])
+				b.recordIndex, _ = meta["source_record_index"].(int)
 				b.issue("missing_tool_result", "No observed result for tool call "+call.ID+"; execution outcome is unknown.")
 			}
 		}
@@ -178,7 +191,7 @@ func Build(events []observer.Event, options Options, initial []Diagnostic) (*Doc
 		return nil, &SemanticError{Diagnostics: b.diagnostics}
 	}
 	b.totals["total_steps"] = len(b.document.Steps)
-	b.totals["extra"] = map[string]any{Namespace: map[string]any{"observed_exchanges": len(events), "exchanges_with_usage": b.metricsCount, "exchanges_with_recorded_cost": b.costCount, "usage_coverage_complete": b.metricsComplete == len(events), "cost_coverage_complete": b.costCount == len(events), "includes_known_failed_exchange_metrics": true}}
+	b.totals["extra"] = map[string]any{Namespace: map[string]any{"observed_exchanges": len(events), "exchanges_with_usage": b.metricsCount, "exchanges_with_recorded_cost": b.costCount, "usage_coverage_complete": b.metricsComplete == len(events), "cost_coverage_complete": b.costCount == len(events), "includes_known_failed_exchange_metrics": true, "aggregation_basis": "source_records", "distinct_provider_inferences_verified": false}}
 	b.document.FinalMetrics = b.totals
 	state := options.State
 	if state == "" {
@@ -260,11 +273,11 @@ func (b *builder) add(m message, observed bool, event observer.Event) {
 				return
 			}
 		}
-		step.Observation.Results = append(step.Observation.Results, Result{CallID: m.resultID, Content: m.text, Extra: map[string]any{Namespace: map[string]any{"observed_in_exchange": b.exchange, "provider_result": m.raw}}})
+		step.Observation.Results = append(step.Observation.Results, Result{CallID: m.resultID, Content: m.text, Extra: map[string]any{Namespace: map[string]any{"observed_in_exchange": b.exchange, "observed_in_record": b.recordIndex, "provider_result": m.raw}}})
 		return
 	}
 	step := Step{ID: len(b.document.Steps) + 1, Source: m.role, Message: m.text}
-	meta := map[string]any{"exchange_id": b.exchange, "observed_response": observed}
+	meta := map[string]any{"exchange_id": b.exchange, "source_record_index": b.recordIndex, "observed_response": observed}
 	if !observed {
 		meta["origin"] = "request_context"
 		if role := str(object(m.raw)["role"]); role != "" {

@@ -304,3 +304,48 @@ data: [DONE]
 	}
 	saveFixture(t, "chat-reasoning-stream", doc)
 }
+
+func TestBufferedStreamWithOpenAIUsageOnAnthropicRoute(t *testing.T) {
+	e := event("buffered", `{"stream":true,"messages":[{"role":"user","content":"hello"}]}`, `{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"complete"}}],"usage":{"prompt_tokens":20,"completion_tokens":3,"cache_read_input_tokens":10,"cache_creation_input_tokens":2,"prompt_tokens_details":{"cached_tokens":10}}}`)
+	e.Path = "/v1/messages"
+	e.Stream = true
+	body, _ := json.Marshal(e.ResponseJSON)
+	bodyText := string(body)
+	e.ResponseBody = &bodyText
+	doc := build(t, []observer.Event{e}, true)
+	if hasIssue(doc, "incomplete_stream") || doc.Steps[1].Metrics["prompt_tokens"] != int64(20) || doc.FinalMetrics["total_prompt_tokens"] != int64(20) {
+		t.Fatal("buffered stream or inclusive usage misclassified")
+	}
+	saveFixture(t, "buffered-cross-protocol", doc)
+}
+
+func TestLegacyReusedExchangeIDPreservesSourceRecords(t *testing.T) {
+	failed := event("reused", `{"messages":[{"role":"user","content":"retry"}]}`, `{"error":{"message":"rate limited"}}`)
+	failureStatus := 429
+	failed.ResponseStatus = &failureStatus
+	failed.StartedAtMS = 10
+	failed.CompletedAtMS = 20
+	success := event("reused", `{"messages":[{"role":"user","content":"retry"}]}`, `{"choices":[{"message":{"content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":1}}`)
+	success.StartedAtMS = 30
+	success.CompletedAtMS = 40
+	// File order intentionally differs from timestamp order. Provenance must refer
+	// to original source record positions, not the export's sort order.
+	doc := build(t, []observer.Event{success, failed, failed}, false)
+	if !hasIssue(doc, "reused_exchange_id") || len(doc.Steps) != 2 {
+		t.Fatal("source records dropped or assistant response duplicated")
+	}
+	if doc.Steps[1].Extra[Namespace].(map[string]any)["source_record_index"] != 1 {
+		t.Fatal("source position changed during sorting")
+	}
+	if doc.FinalMetrics["total_prompt_tokens"] != int64(4) {
+		t.Fatal("failed retries invented usage")
+	}
+	metadata := doc.FinalMetrics["extra"].(map[string]any)[Namespace].(map[string]any)
+	if metadata["aggregation_basis"] != "source_records" || metadata["distinct_provider_inferences_verified"] != false {
+		t.Fatal("ambiguous records claimed distinct inferences")
+	}
+	if _, err := Build([]observer.Event{success, failed, failed}, Options{Strict: true}, nil); err == nil {
+		t.Fatal("strict accepted reused IDs")
+	}
+	saveFixture(t, "legacy-reused-ids", doc)
+}

@@ -34,9 +34,10 @@ func (o Options) Validate() error {
 }
 
 type Diagnostic struct {
-	Code       string `json:"code"`
-	Message    string `json:"message"`
-	ExchangeID string `json:"exchange_id,omitempty"`
+	Code              string `json:"code"`
+	Message           string `json:"message"`
+	ExchangeID        string `json:"exchange_id,omitempty"`
+	SourceRecordIndex int    `json:"source_record_index,omitempty"`
 }
 
 type SemanticError struct{ Diagnostics []Diagnostic }
