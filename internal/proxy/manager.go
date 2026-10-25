@@ -18,6 +18,7 @@ import (
 
 	"github.com/xxyyue/llm-observer-proxy-go/internal/catalog"
 	"github.com/xxyyue/llm-observer-proxy-go/internal/observer"
+	"github.com/xxyyue/llm-observer-proxy-go/internal/trajectory"
 )
 
 var runIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
@@ -67,6 +68,10 @@ func ValidateRunID(runID string) error {
 }
 
 func (m *Manager) Create(runID, bindHost string, port int) (*Instance, error) {
+	return m.CreateWithMetadata(runID, bindHost, port, trajectory.Metadata{})
+}
+
+func (m *Manager) CreateWithMetadata(runID, bindHost string, port int, metadata trajectory.Metadata) (*Instance, error) {
 	if err := ValidateRunID(runID); err != nil {
 		return nil, err
 	}
@@ -109,9 +114,10 @@ func (m *Manager) Create(runID, bindHost string, port int) (*Instance, error) {
 		return nil, err
 	}
 	configData, _ := json.MarshalIndent(map[string]any{
-		"backend":            "bifrost",
-		"embedded":           true,
-		"model_catalog_path": m.catalog.Path,
+		"backend":             "bifrost",
+		"embedded":            true,
+		"model_catalog_path":  m.catalog.Path,
+		"trajectory_metadata": metadata,
 	}, "", "  ")
 	if err := os.WriteFile(configPath, append(configData, '\n'), 0o644); err != nil {
 		return nil, err
@@ -292,4 +298,29 @@ func (m *Manager) record(instance *Instance) map[string]any {
 
 func (m *Manager) runRoot(runID string) string {
 	return filepath.Join(m.artifactRoot, "runs", runID, "platform", "llm")
+}
+
+// Trajectory exports the complete event log, including archived runs after restart.
+func (m *Manager) Trajectory(runID string, options trajectory.Options) (*trajectory.Document, bool, error) {
+	_, state, _, path, ok := m.resolveView(runID)
+	if !ok {
+		return nil, false, nil
+	}
+	options.RunID = runID
+	options.State = state
+	data, err := os.ReadFile(filepath.Join(m.runRoot(runID), "config.json"))
+	if err != nil && !os.IsNotExist(err) {
+		return nil, true, err
+	}
+	if err == nil {
+		var config struct {
+			Metadata trajectory.Metadata `json:"trajectory_metadata"`
+		}
+		if err := json.Unmarshal(data, &config); err != nil {
+			return nil, true, fmt.Errorf("invalid run metadata")
+		}
+		options.Metadata = config.Metadata
+	}
+	document, err := trajectory.ExportFile(path, options)
+	return document, true, err
 }

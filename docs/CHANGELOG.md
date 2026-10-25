@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- Add ATIF v1.7 trajectory downloads and offline `export` command while retaining
+  `events.jsonl` and the existing history/conversation formats.
+- Reconstruct sequential text trajectories, associate tool results, preserve
+  recorded estimates, and report incomplete or ambiguous reconstruction.
+- Add optional persisted agent metadata and strict export validation.
+- Verify synthetic exports with pinned official Harbor models in CI.
+
 ## 0.1.0 - 2026-07-11
 
 - Introduce a run-scoped LLM observability control plane implemented in Go.

@@ -135,6 +135,33 @@ func TestNativeBifrostControlAndDataPlaneCompatibility(t *testing.T) {
 		t.Fatalf("stream response missing from conversation: %s", conversation.raw)
 	}
 
+	beforeExport, err := os.ReadFile(create.body["history_path"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	exported := requestJSON(t, http.MethodGet, controlPlane.URL+"/api/runs/run-001/trajectory?format=atif", nil)
+	if exported.status != http.StatusOK || exported.body["schema_version"] != "ATIF-v1.7" {
+		t.Fatal("recorded export failed", exported.raw)
+	}
+	var observed []map[string]any
+	for _, raw := range exported.body["steps"].([]any) {
+		step := raw.(map[string]any)
+		if step["source"] == "agent" {
+			observed = append(observed, step)
+		}
+	}
+	if len(observed) != 2 || observed[0]["message"] != "openai-ok" || observed[1]["message"] != "anthropic-ok" || observed[1]["model_name"] != "claude-test" {
+		t.Fatal("recorded responses changed", exported.raw)
+	}
+	totals := exported.body["final_metrics"].(map[string]any)
+	if totals["total_prompt_tokens"] != float64(9) || totals["total_completion_tokens"] != float64(5) {
+		t.Fatal("recorded usage changed", exported.raw)
+	}
+	afterExport, err := os.ReadFile(create.body["history_path"].(string))
+	if err != nil || !bytes.Equal(beforeExport, afterExport) {
+		t.Fatal("export changed recorder event log")
+	}
+
 	deleted := requestJSON(t, http.MethodDelete, controlPlane.URL+"/api/runs/run-001/proxy", nil)
 	if deleted.status != http.StatusOK {
 		t.Fatalf("delete failed: %s", deleted.raw)

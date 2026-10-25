@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/xxyyue/llm-observer-proxy-go/internal/proxy"
+	"github.com/xxyyue/llm-observer-proxy-go/internal/trajectory"
 )
 
 type Server struct {
@@ -56,6 +57,8 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		}
 	case action == "history" && request.Method == http.MethodGet:
 		s.history(writer, request, runID)
+	case action == "trajectory" && request.Method == http.MethodGet:
+		s.trajectory(writer, request, runID)
 	case action == "conversation" && request.Method == http.MethodGet:
 		s.conversation(writer, runID)
 	default:
@@ -90,7 +93,19 @@ func (s *Server) create(writer http.ResponseWriter, request *http.Request, runID
 			bindHost = strings.TrimSpace(text)
 		}
 	}
-	instance, err := s.manager.Create(runID, bindHost, port)
+	var metadata trajectory.Metadata
+	if value, exists := payload["trajectory_metadata"]; exists {
+		if _, ok := value.(map[string]any); !ok {
+			writeJSON(writer, http.StatusBadRequest, map[string]any{"error": "trajectory_metadata must be an object"})
+			return
+		}
+		data, _ := json.Marshal(value)
+		if err := json.Unmarshal(data, &metadata); err != nil {
+			writeJSON(writer, http.StatusBadRequest, map[string]any{"error": "agent_name and agent_version must be strings"})
+			return
+		}
+	}
+	instance, err := s.manager.CreateWithMetadata(runID, bindHost, port, metadata)
 	if err != nil {
 		status := http.StatusBadRequest
 		if strings.Contains(strings.ToLower(err.Error()), "already exists") {
@@ -156,7 +171,7 @@ func parseRunPath(path string) (string, string, bool) {
 	if len(parts) != 4 || parts[0] != "api" || parts[1] != "runs" {
 		return "", "", false
 	}
-	if parts[3] != "proxy" && parts[3] != "history" && parts[3] != "conversation" {
+	if parts[3] != "proxy" && parts[3] != "history" && parts[3] != "conversation" && parts[3] != "trajectory" {
 		return "", "", false
 	}
 	return parts[2], parts[3], true
@@ -190,4 +205,41 @@ func writeJSON(writer http.ResponseWriter, status int, payload any) {
 	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
 	writer.WriteHeader(status)
 	_ = json.NewEncoder(writer).Encode(payload)
+}
+
+func (s *Server) trajectory(writer http.ResponseWriter, request *http.Request, runID string) {
+	options := trajectory.Options{Format: request.URL.Query().Get("format"), Version: request.URL.Query().Get("version")}
+	if err := options.Validate(); err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	if raw, present := request.URL.Query()["strict"]; present {
+		if len(raw) != 1 || (raw[0] != "true" && raw[0] != "false") {
+			writeJSON(writer, http.StatusBadRequest, map[string]any{"error": "strict must be true or false"})
+			return
+		}
+		options.Strict = raw[0] == "true"
+	}
+	document, found, err := s.manager.Trajectory(runID, options)
+	if err != nil {
+		status := http.StatusInternalServerError
+		var semantic *trajectory.SemanticError
+		var empty *trajectory.EmptyError
+		if errors.As(err, &semantic) || errors.As(err, &empty) {
+			status = http.StatusUnprocessableEntity
+		}
+		payload := map[string]any{"error": err.Error()}
+		if semantic != nil {
+			payload["diagnostics"] = semantic.Diagnostics
+		}
+		writeJSON(writer, status, payload)
+		return
+	}
+	if !found {
+		writeJSON(writer, http.StatusNotFound, map[string]any{"error": "Run history not found"})
+		return
+	}
+	writer.Header().Set("Content-Disposition", `attachment; filename="trajectory.atif.json"`)
+	writer.Header().Set("Cache-Control", "no-store")
+	writeJSON(writer, http.StatusOK, document)
 }

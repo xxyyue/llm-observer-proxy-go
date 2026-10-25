@@ -158,8 +158,26 @@ The legacy top-level catalog key `llm_proxy` remains accepted when `llm_observer
 | `DELETE` | `/api/runs/{run_id}/proxy` | Stop a data plane |
 | `GET` | `/api/runs/{run_id}/history` | Read normalized history |
 | `GET` | `/api/runs/{run_id}/conversation` | Read the latest conversation |
+| `GET` | `/api/runs/{run_id}/trajectory` | Export an ATIF v1.7 trajectory |
 
-The create payload may be empty. Optional active fields are `port` and `bind_host`. Compatibility fields including `model`, `mode`, `backend`, `litellm_config_path`, `litellm_env`, and `strip_callbacks` are accepted and ignored, as are unknown fields. The complete request and response contract is documented in `docs/control-plane-api.md`.
+The create payload may be empty. Optional active fields are `port`, `bind_host`, and `trajectory_metadata`. Compatibility fields including `model`, `mode`, `backend`, `litellm_config_path`, `litellm_env`, and `strip_callbacks` are accepted and ignored, as are unknown fields. The complete request and response contract is documented in `docs/control-plane-api.md`.
+
+## ATIF Export
+
+Keep `events.jsonl` as the internal log and export a standard ATIF v1.7 trajectory
+through HTTP or offline from an existing run:
+
+```bash
+curl --fail 'http://127.0.0.1:8790/api/runs/run-001/trajectory?format=atif&version=1.7' -o trajectory.atif.json
+llm-observer-proxy export --events /path/to/events.jsonl --output trajectory.atif.json
+```
+
+Export reconstructs observed history across requests and links visible tool results.
+Add `strict=true` to HTTP or `--strict` to CLI to reject ambiguous/incomplete
+reconstruction. Default exports include explicit diagnostics under
+`extra.llm_observer_proxy`. Original event logs remain unchanged.
+See [trajectory export](docs/trajectory-export.md) for metadata, accounting,
+compatibility limits, and validation.
 
 ## Artifacts
 

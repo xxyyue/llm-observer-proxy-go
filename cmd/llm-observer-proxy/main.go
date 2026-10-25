@@ -25,6 +25,13 @@ import (
 var version = "dev"
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "export" {
+		if err := runExport(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "export:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	host := flag.String("host", "127.0.0.1", "control plane host")
 	port := flag.Int("port", 8790, "control plane port")
 	artifactRoot := flag.String("artifact-root", "", "artifact root (default: LLM_OBSERVER_PROXY_ARTIFACT_ROOT or ./artifacts)")

@@ -24,6 +24,13 @@ jobs:
       - name: Vet
         run: go vet ./...
       - name: Test
+        env:
+          ATIF_FIXTURE_DIR: ${{ runner.temp }}/atif-fixtures
         run: go test -race ./...
+      - name: Validate ATIF with pinned Harbor models
+        run: |
+          python3 -m venv "$RUNNER_TEMP/atif-venv"
+          "$RUNNER_TEMP/atif-venv/bin/pip" install pydantic==2.12.3
+          "$RUNNER_TEMP/atif-venv/bin/python" scripts/validate_atif.py "$RUNNER_TEMP/atif-fixtures"
       - name: Build
         run: go build -trimpath ./cmd/llm-observer-proxy

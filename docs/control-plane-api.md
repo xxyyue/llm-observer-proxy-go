@@ -35,6 +35,7 @@ Fields:
 | --- | --- | --- | --- |
 | `bind_host` | string | `127.0.0.1` | Data-plane bind address |
 | `port` | integer | automatic | Data-plane port from 1 through 65535 |
+| `trajectory_metadata` | object | omitted | Optional string fields `agent_name` and `agent_version` for ATIF export |
 
 Unknown fields are ignored. Compatibility fields including `model`, `mode`, `backend`, `litellm_config_path`, `litellm_env`, and `strip_callbacks` are accepted but do not alter behavior. The service always uses its embedded Bifrost data plane. A data plane serves every configured model, and each LLM request selects a model through the request's `model` field. OpenAI-compatible and Anthropic-compatible endpoints are available simultaneously.
 
@@ -98,6 +99,25 @@ GET /api/runs/{run_id}/conversation
 ```
 
 The response reconstructs the most recent observable exchange into messages, tool calls, usage totals, and an optional `latestError`.
+
+## Export an ATIF Trajectory
+
+```http
+GET /api/runs/{run_id}/trajectory?format=atif&version=1.7
+GET /api/runs/{run_id}/trajectory?strict=true
+```
+
+Returns an ATIF v1.7 JSON document as an attachment, reconstructed from the full
+internal event log. Running runs export a snapshot; stopped and archived runs are
+also supported. `format` and `version` default to the only supported profile,
+`atif` / `1.7`. Unknown values return `400`. `strict` accepts `true` or `false`.
+Empty histories and strict reconstruction failures return `422`; strict failures
+include `diagnostics`. Read failures or corrupt complete JSONL records return
+`500`. Missing history returns `404`.
+
+Default mode preserves unsupported or ambiguous content under namespaced `extra`
+with diagnostics. It never silently presents a partial reconstruction as complete.
+See [trajectory export](trajectory-export.md) for the full contract and CLI.
 
 ## Debug List
 
