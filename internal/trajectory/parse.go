@@ -2,19 +2,27 @@
 package trajectory
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"io"
 	"strings"
 
 	"github.com/xxyyue/llm-observer-proxy-go/internal/observer"
 )
 
 type message struct {
-	role      string
-	text      string
-	reasoning string
-	tools     []ToolCall
-	resultID  string
-	raw       any
+	identity     string
+	role         string
+	content      any
+	originalRole string
+	text         string
+	reasoning    string
+	tools        []ToolCall
+	resultID     string
+	raw          any
 }
 
 func object(v any) map[string]any { m, _ := v.(map[string]any); return m }
@@ -29,8 +37,12 @@ func first(values ...any) any {
 	return nil
 }
 func fingerprint(m message) string {
-	b, _ := json.Marshal([]any{m.role, m.text, m.tools, m.resultID})
-	return string(b)
+	if m.identity != "" {
+		return m.identity
+	}
+	b, _ := json.Marshal([]any{m.role, m.value(), m.tools, m.resultID})
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }
 func decodeBody(value any, body *string) any {
 	if value != nil {
@@ -38,32 +50,31 @@ func decodeBody(value any, body *string) any {
 	}
 	if body != nil {
 		var result any
-		if json.Unmarshal([]byte(*body), &result) == nil {
+		if decodeJSON([]byte(*body), &result) == nil {
 			return result
 		}
 	}
 	return nil
 }
 
-func (b *builder) content(value any) string {
-	if text, ok := value.(string); ok {
-		return text
+func decodeJSON(data []byte, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(target); err != nil {
+		return err
 	}
-	var parts []string
-	for _, item := range array(value) {
-		part := object(item)
-		switch str(part["type"]) {
-		case "text", "input_text", "output_text", "summary_text":
-			parts = append(parts, str(part["text"]))
-		case "tool_use", "tool_result", "thinking", "redacted_thinking": // handled by message parser
-		default:
-			b.unmapped("unsupported_content", "Content is not representable by this text-only exporter.", item)
-		}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return fmt.Errorf("expected one JSON value")
 	}
-	if value != nil && array(value) == nil {
-		b.unmapped("unsupported_content", "Unexpected object content retained in export metadata.", value)
+	return nil
+}
+func (b *builder) content(value any) string { return textOf(b.standardContent(value)) }
+func (m message) value() any {
+	if m.content != nil {
+		return m.content
 	}
-	return strings.Join(parts, "\n")
+	return m.text
 }
 
 func (b *builder) tool(raw any) (ToolCall, bool) {
@@ -77,7 +88,7 @@ func (b *builder) tool(raw any) (ToolCall, bool) {
 	arguments := first(function["arguments"], function["input"])
 	if text, ok := arguments.(string); ok {
 		var parsed any
-		if json.Unmarshal([]byte(text), &parsed) == nil {
+		if decodeJSON([]byte(text), &parsed) == nil {
 			arguments = parsed
 		}
 	}
@@ -107,7 +118,8 @@ func (b *builder) parseMessage(raw any) []message {
 		b.unmapped("unsupported_role", "Unknown message role.", raw)
 		return nil
 	}
-	m := message{role: role, text: b.content(item["content"]), raw: raw}
+	content := b.standardContent(item["content"])
+	m := message{role: role, text: textOf(content), content: content, originalRole: originalRole, raw: raw}
 	if originalRole == "tool" {
 		m.resultID = str(item["tool_call_id"])
 		return []message{m}
@@ -127,7 +139,7 @@ func (b *builder) parseMessage(raw any) []message {
 				m.tools = append(m.tools, tool)
 			}
 		case "tool_result":
-			results = append(results, message{role: "tool", text: b.content(part["content"]), resultID: str(part["tool_use_id"]), raw: rawPart})
+			results = append(results, message{role: "tool", content: b.standardContent(part["content"]), originalRole: "tool", resultID: str(part["tool_use_id"]), raw: rawPart})
 		case "thinking":
 			m.reasoning += str(part["thinking"])
 		case "redacted_thinking":
@@ -135,7 +147,7 @@ func (b *builder) parseMessage(raw any) []message {
 		}
 	}
 	// Anthropic tool-result-only user envelopes are not extra empty user turns.
-	if len(results) > 0 && m.text == "" && len(m.tools) == 0 && m.reasoning == "" {
+	if len(results) > 0 && !hasContent(m.value()) && len(m.tools) == 0 && m.reasoning == "" {
 		return results
 	}
 	return append([]message{m}, results...)
@@ -149,10 +161,10 @@ func (b *builder) request(value any) []message {
 	}
 	var result []message
 	if system := request["system"]; system != nil {
-		result = append(result, message{role: "system", text: b.content(system), raw: system})
+		result = append(result, message{role: "system", content: b.standardContent(system), originalRole: "system", raw: system})
 	}
 	if instructions := request["instructions"]; instructions != nil {
-		result = append(result, message{role: "system", text: b.content(instructions), raw: instructions})
+		result = append(result, message{role: "system", content: b.standardContent(instructions), originalRole: "system", raw: instructions})
 	}
 	if messages, ok := request["messages"].([]any); ok {
 		for _, raw := range messages {
@@ -161,7 +173,7 @@ func (b *builder) request(value any) []message {
 		return result
 	}
 	if input, ok := request["input"].(string); ok {
-		return append(result, message{role: "user", text: input, raw: input})
+		return append(result, message{role: "user", text: input, originalRole: "user", raw: input})
 	}
 	for _, raw := range array(request["input"]) {
 		item := object(raw)
@@ -175,7 +187,7 @@ func (b *builder) request(value any) []message {
 				result = append(result, message{role: "agent", tools: []ToolCall{tool}, raw: item})
 			}
 		case "function_call_output":
-			result = append(result, message{role: "tool", text: b.content(item["output"]), resultID: str(item["call_id"]), raw: item})
+			result = append(result, message{role: "tool", content: b.standardContent(item["output"]), originalRole: "tool", resultID: str(item["call_id"]), raw: item})
 		case "reasoning": // preserve without inventing a second agent invocation
 			b.fragments = append(b.fragments, map[string]any{"exchange_id": b.exchange, "source_record_index": b.recordIndex, "kind": "request_reasoning", "value": item})
 		default:
@@ -190,7 +202,8 @@ func combineAgents(input []message) []message {
 	for _, m := range input {
 		if m.role == "agent" && len(result) > 0 && result[len(result)-1].role == "agent" {
 			previous := &result[len(result)-1]
-			previous.text += m.text
+			previous.content = joinContent(previous.value(), m.value())
+			previous.text = textOf(previous.content)
 			previous.reasoning += m.reasoning
 			previous.tools = append(previous.tools, m.tools...)
 		} else {
@@ -230,7 +243,7 @@ func (b *builder) response(event observer.Event) (message, map[string]any, strin
 				continue
 			}
 			var packet map[string]any
-			if json.Unmarshal([]byte(data), &packet) != nil {
+			if decodeJSON([]byte(data), &packet) != nil {
 				b.unmapped("invalid_stream_event", "Malformed SSE payload retained.", data)
 				continue
 			}
@@ -271,7 +284,8 @@ func (b *builder) response(event observer.Event) (message, map[string]any, strin
 				terminal = object(packet["response"])
 				complete = true
 			case "response.incomplete", "response.failed", "error":
-				b.unmapped("stream_error", "Stream reported failure or incomplete output.", packet)
+				b.notice("stream_error", "Stream reported failure or incomplete output; operational evidence is retained.")
+				b.fragments = append(b.fragments, map[string]any{"kind": "stream_error", "value": packet, "source_record_index": b.recordIndex})
 				terminal = object(packet["response"])
 			}
 		}
@@ -288,12 +302,13 @@ func (b *builder) response(event observer.Event) (message, map[string]any, strin
 	}
 	if status := str(response["status"]); status == "incomplete" || status == "failed" {
 		complete = false
-		b.unmapped("incomplete_response", "Response reports incomplete or failed generation.", response)
+		b.notice("incomplete_response", "Response reports incomplete or failed generation; partial output is explicitly retained.")
+		b.fragments = append(b.fragments, map[string]any{"kind": "incomplete_response", "value": response, "source_record_index": b.recordIndex})
 	}
 	if event.Stream && !complete {
-		b.issue("incomplete_stream", "No terminal stream marker was observed.")
+		b.notice("incomplete_stream", "No terminal stream marker was observed.")
 	}
-	m := message{role: "agent", text: str(normalized["response_text"]), raw: response}
+	m := message{role: "agent", text: str(normalized["response_text"]), originalRole: "assistant", raw: response}
 	for _, call := range array(normalized["response_tool_calls"]) {
 		if tool, ok := b.tool(call); ok {
 			m.tools = append(m.tools, tool)
@@ -338,22 +353,39 @@ func (b *builder) response(event observer.Event) (message, map[string]any, strin
 			if msg["audio"] != nil || msg["refusal"] != nil || msg["function_call"] != nil {
 				b.unmapped("unsupported_response", "Unmapped response fields retained.", msg)
 			}
-			_ = b.content(msg["content"])
+			if content := msg["content"]; content != nil {
+				m.content = b.standardContent(content)
+				m.text = textOf(m.content)
+			}
 		}
-		_ = b.content(response["content"])
+		if content := response["content"]; content != nil {
+			m.content = b.standardContent(content)
+			m.text = textOf(m.content)
+		}
+		if response["output"] != nil {
+			m.content = nil
+		}
 		for _, raw := range array(response["output"]) {
 			item := object(raw)
 			switch str(item["type"]) {
 			case "message":
-				_ = b.content(item["content"])
+				content := b.standardContent(item["content"])
+				if hasContent(content) {
+					if m.content == nil {
+						m.content = content
+					} else {
+						m.content = joinContent(m.content, content)
+					}
+				}
+				m.text = textOf(m.value())
 			case "function_call", "reasoning":
 			default:
 				b.unmapped("unsupported_output", "Responses output item could not be mapped.", raw)
 			}
 		}
 	}
-	if m.text == "" && len(m.tools) == 0 && m.reasoning == "" && event.Error == nil && (event.ResponseStatus == nil || *event.ResponseStatus < 400) {
-		b.unmapped("empty_response", "No representable assistant response was observed.", first(response, body))
+	if !hasContent(m.value()) && len(m.tools) == 0 && m.reasoning == "" && event.Error == nil && (event.ResponseStatus == nil || *event.ResponseStatus < 400) {
+		b.notice("empty_response", "No assistant content was returned; an operational record is retained.")
 	}
 	return m, usage, responseID, complete
 }
@@ -369,7 +401,9 @@ func (b *builder) inspectPacket(packet map[string]any) {
 			b.unmapped("unsupported_stream_content", "Unmapped completion delta retained.", delta)
 		}
 		if content := delta["content"]; content != nil {
-			_ = b.content(content)
+			if parts, ok := b.standardContent(content).([]ContentPart); ok && len(parts) > 0 {
+				b.unmapped("unsupported_stream_media", "Structured stream content is not assembled; raw packet retained.", packet)
+			}
 		}
 	}
 	if str(packet["type"]) == "content_block_start" {
@@ -392,7 +426,9 @@ func (b *builder) inspectPacket(packet map[string]any) {
 		item := object(packet["item"])
 		switch str(item["type"]) {
 		case "message":
-			_ = b.content(item["content"])
+			if parts, ok := b.standardContent(item["content"]).([]ContentPart); ok && len(parts) > 0 {
+				b.unmapped("unsupported_stream_media", "Structured stream content requires terminal response; raw packet retained.", packet)
+			}
 		case "function_call", "reasoning":
 		default:
 			b.unmapped("unsupported_stream_content", "Unmapped Responses output retained.", packet)

@@ -2,7 +2,10 @@ module github.com/xxyyue/llm-observer-proxy-go
 
 go 1.26.4
 
-require github.com/maximhq/bifrost/core v1.6.3
+require (
+	github.com/maximhq/bifrost/core v1.6.3
+	golang.org/x/image v0.32.0
+)
 
 require (
 	github.com/andybalholm/brotli v1.2.1 // indirect

@@ -14,7 +14,9 @@ func runExport(args []string) error {
 	flags := flag.NewFlagSet("export", flag.ContinueOnError)
 	events := flags.String("events", "", "source events.jsonl (required)")
 	output := flags.String("output", "", "destination JSON file (required)")
+	packaging := flags.String("package", "json", "json with portable sidecar assets, or zip")
 	options := trajectory.Options{}
+	flags.StringVar(&options.ImageMediaType, "image-media-type", "", "explicit MIME for otherwise untyped remote image references")
 	flags.StringVar(&options.Format, "format", "atif", "export format")
 	flags.StringVar(&options.Version, "format-version", trajectory.Version, "ATIF version")
 	flags.StringVar(&options.RunID, "run-id", "", "run ID (default: from source events)")
@@ -33,16 +35,23 @@ func runExport(args []string) error {
 	if *events == "" || *output == "" {
 		return fmt.Errorf("--events and --output are required")
 	}
+	if *packaging != "json" && *packaging != "zip" {
+		return fmt.Errorf("--package must be json or zip")
+	}
 	document, err := trajectory.ExportFile(*events, options)
 	if err != nil {
 		return err
 	}
-	if err := trajectory.WriteFile(*output, *events, document); err != nil {
+	write := trajectory.WriteFile
+	if *packaging == "zip" {
+		write = trajectory.WriteZIPFile
+	}
+	if err := write(*output, *events, document); err != nil {
 		return err
 	}
 	if meta, ok := document.Extra[trajectory.Namespace].(map[string]any); ok {
 		if diagnostics, ok := meta["diagnostics"].([]trajectory.Diagnostic); ok && len(diagnostics) > 0 {
-			fmt.Fprintf(os.Stderr, "Export contains %d reconstruction warning(s); see extra.llm_observer_proxy.diagnostics or use --strict.\n", len(diagnostics))
+			fmt.Fprintf(os.Stderr, "Export contains %d diagnostic(s); severities and evidence are in extra.llm_observer_proxy.diagnostics.\n", len(diagnostics))
 		}
 	}
 	fmt.Fprintln(os.Stderr, "ATIF trajectory written to", *output)

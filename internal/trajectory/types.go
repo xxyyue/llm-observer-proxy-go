@@ -15,12 +15,13 @@ type Metadata struct {
 }
 
 type Options struct {
-	Format   string
-	Version  string
-	RunID    string
-	State    string
-	Strict   bool
-	Metadata Metadata
+	ImageMediaType string
+	Format         string
+	Version        string
+	RunID          string
+	State          string
+	Strict         bool
+	Metadata       Metadata
 }
 
 func (o Options) Validate() error {
@@ -30,10 +31,14 @@ func (o Options) Validate() error {
 	if o.Version != "" && o.Version != Version {
 		return fmt.Errorf("unsupported ATIF version %q; supported: %s", o.Version, Version)
 	}
+	if o.ImageMediaType != "" && mediaExtensions[o.ImageMediaType] == "" {
+		return fmt.Errorf("unsupported image media type")
+	}
 	return nil
 }
 
 type Diagnostic struct {
+	Severity          string `json:"severity"`
 	Code              string `json:"code"`
 	Message           string `json:"message"`
 	ExchangeID        string `json:"exchange_id,omitempty"`
@@ -51,12 +56,13 @@ type EmptyError struct{}
 func (*EmptyError) Error() string { return "no observable conversation steps to export" }
 
 type Document struct {
-	SchemaVersion string         `json:"schema_version"`
-	SessionID     string         `json:"session_id,omitempty"`
-	Agent         Agent          `json:"agent"`
-	Steps         []Step         `json:"steps"`
-	FinalMetrics  map[string]any `json:"final_metrics,omitempty"`
-	Extra         map[string]any `json:"extra,omitempty"`
+	Assets        map[string]Asset `json:"-"`
+	SchemaVersion string           `json:"schema_version"`
+	SessionID     string           `json:"session_id,omitempty"`
+	Agent         Agent            `json:"agent"`
+	Steps         []Step           `json:"steps"`
+	FinalMetrics  map[string]any   `json:"final_metrics,omitempty"`
+	Extra         map[string]any   `json:"extra,omitempty"`
 }
 
 type Agent struct {
@@ -68,7 +74,7 @@ type Agent struct {
 type Step struct {
 	ID          int            `json:"step_id"`
 	Source      string         `json:"source"`
-	Message     string         `json:"message"`
+	Message     any            `json:"message"`
 	Timestamp   string         `json:"timestamp,omitempty"`
 	Model       string         `json:"model_name,omitempty"`
 	Reasoning   string         `json:"reasoning_content,omitempty"`
@@ -89,6 +95,21 @@ type Observation struct {
 }
 type Result struct {
 	CallID  string         `json:"source_call_id,omitempty"`
-	Content string         `json:"content"`
+	Content any            `json:"content"`
 	Extra   map[string]any `json:"extra,omitempty"`
+}
+
+// Asset bytes are carried separately from ATIF JSON and published by the exporter.
+type Asset struct {
+	Data      []byte
+	MediaType string
+}
+type ContentPart struct {
+	Type   string       `json:"type"`
+	Text   *string      `json:"text,omitempty"`
+	Source *ImageSource `json:"source,omitempty"`
+}
+type ImageSource struct {
+	MediaType string `json:"media_type"`
+	Path      string `json:"path"`
 }

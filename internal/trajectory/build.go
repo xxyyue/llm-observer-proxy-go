@@ -10,14 +10,16 @@ import (
 )
 
 type builder struct {
+	assets          map[string]Asset
+	imageMediaType  string
 	document        Document
 	exchange        string
 	recordIndex     int
 	diagnostics     []Diagnostic
 	fragments       []any
 	calls           map[string][]int
-	contexts        map[string][]message
-	previous        []message
+	inputContexts   map[string]any
+	candidates      []contextCandidate
 	totals          map[string]any
 	metricsCount    int
 	metricsComplete int
@@ -25,20 +27,35 @@ type builder struct {
 }
 
 func (b *builder) issue(code, text string) {
-	b.diagnostics = append(b.diagnostics, Diagnostic{Code: code, Message: text, ExchangeID: b.exchange, SourceRecordIndex: b.recordIndex})
+	b.diagnostics = append(b.diagnostics, Diagnostic{Severity: "error", Code: code, Message: text, ExchangeID: b.exchange, SourceRecordIndex: b.recordIndex})
+}
+func (b *builder) notice(code, text string) {
+	b.diagnostics = append(b.diagnostics, Diagnostic{Severity: "info", Code: code, Message: text, ExchangeID: b.exchange, SourceRecordIndex: b.recordIndex})
 }
 func (b *builder) unmapped(code, text string, value any) {
 	b.issue(code, text)
 	b.fragments = append(b.fragments, map[string]any{"exchange_id": b.exchange, "source_record_index": b.recordIndex, "kind": code, "value": value})
 }
+func (b *builder) provenance() map[string]any {
+	return map[string]any{"exchange_id": b.exchange, "source_record_index": b.recordIndex}
+}
+func semanticErrors(diagnostics []Diagnostic) []Diagnostic {
+	var result []Diagnostic
+	for _, d := range diagnostics {
+		if d.Severity == "error" || d.Severity == "" {
+			result = append(result, d)
+		}
+	}
+	return result
+}
 
-// Build reconstructs only observable interactions. When context relationships are
-// ambiguous, the request context is retained in extra instead of guessing a link.
+// Build retains an execution timeline and an exact captured input checkpoint for
+// every source record. Causal ancestry and representation fidelity are separate.
 func Build(events []observer.Event, options Options, initial []Diagnostic) (*Document, error) {
 	if err := options.Validate(); err != nil {
 		return nil, err
 	}
-	b := builder{calls: map[string][]int{}, contexts: map[string][]message{}, totals: map[string]any{}, diagnostics: initial}
+	b := builder{assets: map[string]Asset{}, imageMediaType: options.ImageMediaType, calls: map[string][]int{}, inputContexts: map[string]any{}, totals: map[string]any{}, diagnostics: initial}
 	b.document = Document{SchemaVersion: "ATIF-v" + Version, SessionID: options.RunID, Agent: Agent{Name: options.Metadata.Name, Version: options.Metadata.Version}, Steps: []Step{}}
 	if b.document.Agent.Name == "" {
 		b.document.Agent.Name = "unknown"
@@ -47,31 +64,27 @@ func Build(events []observer.Event, options Options, initial []Diagnostic) (*Doc
 		b.document.Agent.Version = "unknown"
 	}
 	b.document.Agent.Extra = map[string]any{Namespace: map[string]any{"metadata_source": "caller_or_unknown"}}
-	events = append([]observer.Event(nil), events...)
-	allTimed := len(events) > 0
-	for _, event := range events {
-		if event.StartedAtMS <= 0 {
-			allTimed = false
-		}
-	}
 	type indexedEvent struct {
 		event  observer.Event
 		record int
 	}
 	ordered := make([]indexedEvent, len(events))
-	for index, event := range events {
-		ordered[index] = indexedEvent{event: event, record: index + 1}
+	allTimed := len(events) > 0
+	for i, event := range events {
+		ordered[i] = indexedEvent{event, i + 1}
+		if event.StartedAtMS <= 0 {
+			allTimed = false
+		}
 	}
 	if allTimed {
 		sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].event.StartedAtMS < ordered[j].event.StartedAtMS })
 	}
-	seenExchanges := map[string]bool{}
+	seen := map[string]bool{}
 	var maxCompleted int64
-	latestResponseID := ""
 	for index, entry := range ordered {
 		event := entry.event
-		b.recordIndex = entry.record
 		b.exchange = event.ExchangeID
+		b.recordIndex = entry.record
 		if event.RunID != "" {
 			if b.document.SessionID == "" {
 				b.document.SessionID = event.RunID
@@ -79,94 +92,96 @@ func Build(events []observer.Event, options Options, initial []Diagnostic) (*Doc
 				return nil, fmt.Errorf("event %s belongs to a different run", event.ExchangeID)
 			}
 		}
-		if event.ExchangeID != "" && seenExchanges[event.ExchangeID] {
-			b.issue("reused_exchange_id", "Source records reuse an exchange ID; every record is preserved and totals may include duplicate logging.")
+		reused := event.ExchangeID != "" && seen[event.ExchangeID]
+		seen[event.ExchangeID] = true
+		if reused {
+			b.notice("reused_exchange_id", "Source identifier reused; records stay distinct by source position and totals may include duplicate logging.")
 		}
-		seenExchanges[event.ExchangeID] = true
-		concurrent := event.StartedAtMS > 0 && event.StartedAtMS < maxCompleted
-		if concurrent {
-			b.issue("overlapping_exchanges", "Requests overlap; steps are ordered by observed start time, not asserted causal order.")
+		overlapping := event.StartedAtMS > 0 && event.StartedAtMS < maxCompleted
+		if overlapping {
+			b.notice("overlapping_exchanges", "Calls overlap; each has its own captured input checkpoint, and observation order does not assert causal order.")
 		}
 		if event.CompletedAtMS > maxCompleted {
 			maxCompleted = event.CompletedAtMS
 		}
-		requestJSON := decodeBody(event.RequestJSON, event.RequestBody)
-		event.RequestJSON = requestJSON
-		request := object(requestJSON)
-		messages := b.request(requestJSON)
-		linked := false
-		offset := 0
-		if index == 0 {
-			linked = true
-			if str(request["previous_response_id"]) != "" {
-				b.issue("unknown_previous_response", "Initial request references prior context absent from this event log.")
-			}
-		} else {
-			previousID := str(request["previous_response_id"])
-			if previousID != "" {
-				if prior, ok := b.contexts[previousID]; ok {
-					linked = true
-					if previousID != latestResponseID {
-						b.issue("branched_response_context", "Continuation references an earlier branch; no complete linear trajectory is asserted.")
-					}
-					// Responses supplies only incremental input; repeated instructions are
-					// context, not another system event when they are unchanged.
-					for offset < len(messages) && offset < len(prior) && messages[offset].role == "system" && fingerprint(messages[offset]) == fingerprint(prior[offset]) {
-						offset++
-					}
-				} else {
-					b.issue("unknown_previous_response", "previous_response_id is not present in the observed history.")
-				}
-			} else if !concurrent {
-				offset, linked = overlap(b.previous, messages)
-			}
+		event.RequestJSON = decodeBody(event.RequestJSON, event.RequestBody)
+		messages := b.request(event.RequestJSON)
+		for i := range messages {
+			messages[i].identity = fingerprint(messages[i])
 		}
-		if linked {
-			for _, m := range messages[offset:] {
-				b.add(m, false, event)
-			}
-		} else {
-			b.unmapped("unlinked_context", "Request context could not be uniquely linked; retained separately instead of duplicating or guessing its steps.", requestJSON)
-			// Tool results carry their own explicit causal link, even when their
-			// surrounding conversation was truncated or concurrently modified.
+		contextID := b.captureContext(event, messages)
+		match := b.matchContext(event, messages, contextID)
+		if index == 0 {
 			for _, m := range messages {
-				if m.role == "tool" {
+				if m.role != "tool" {
+					b.add(m, false, event)
+				}
+			}
+		} else if match.append {
+			for _, m := range messages[match.offset:] {
+				if m.role != "tool" {
 					b.add(m, false, event)
 				}
 			}
 		}
+		// Results can be observed after intervening calls. Backfill for display, but
+		// every subsequent call's replacement checkpoint prevents future leakage.
+		for _, m := range messages {
+			if m.role == "tool" {
+				b.add(m, false, event)
+			}
+		}
+		boundaryID := b.boundary(event, messages, contextID, match)
 		response, usage, responseID, complete := b.response(event)
+		response.identity = fingerprint(response)
 		metrics := b.metrics(event, usage)
 		failed := event.Error != nil || (event.ResponseStatus != nil && *event.ResponseStatus >= 400)
-		if failed {
-			b.issue("failed_exchange", "An observed request failed; it is retained as an error, not an assistant answer.")
-			b.fragments = append(b.fragments, map[string]any{"kind": "failed_exchange", "exchange_id": event.ExchangeID, "source_record_index": b.recordIndex, "status": event.ResponseStatus, "error": event.Error, "response": decodeBody(event.ResponseJSON, event.ResponseBody), "body": event.ResponseBody, "metrics": metrics})
-		}
-		if response.text != "" || len(response.tools) > 0 || response.reasoning != "" {
+		meaningful := hasContent(response.value()) || len(response.tools) > 0 || response.reasoning != ""
+		if meaningful {
 			b.add(response, true, event)
 			step := &b.document.Steps[len(b.document.Steps)-1]
-			step.Model = str(request["model"])
+			step.Model = str(object(event.RequestJSON)["model"])
 			step.Metrics = metrics
 			meta := step.Extra[Namespace].(map[string]any)
-			meta["context_linked"] = linked
+			meta["input_context_id"] = contextID
+			meta["input_boundary_step_id"] = boundaryID
+			meta["branch_id"] = match.branch
 			if failed || !complete {
-				meta["partial_response"] = true
+				meta["response_state"] = "partial"
+			} else {
+				meta["response_state"] = "captured"
+			}
+		}
+		if failed || !meaningful || reused {
+			kind := "request_completed_without_content"
+			if failed {
+				kind = "request_failed"
+			} else if reused {
+				kind = "source_identifier_reused"
+			}
+			meta := b.provenance()
+			meta["operational_event"] = kind
+			meta["input_context_id"] = contextID
+			meta["input_boundary_step_id"] = boundaryID
+			meta["response_status"] = event.ResponseStatus
+			meta["error"] = event.Error
+			meta["response"] = decodeBody(event.ResponseJSON, event.ResponseBody)
+			meta["metrics"] = metrics
+			b.document.Steps = append(b.document.Steps, Step{ID: len(b.document.Steps) + 1, Source: "system", Message: "Observed LLM operation: " + kind, Extra: map[string]any{Namespace: meta}})
+			if failed {
+				b.notice("failed_exchange", "Failure is represented as an operational event, not an invented assistant answer.")
 			}
 		}
 		context := append([]message(nil), messages...)
-		if response.text != "" || len(response.tools) > 0 || response.reasoning != "" {
+		if meaningful {
 			context = append(context, response)
 		}
-		if previousID := str(request["previous_response_id"]); previousID != "" {
-			if prior, ok := b.contexts[previousID]; ok {
-				context = append(append([]message(nil), prior...), context...)
-			}
+		candidate := contextCandidate{record: entry.record, exchangeID: event.ExchangeID, responseID: responseID, branch: match.branch, completed: event.CompletedAtMS, messages: context, contextID: contextID, responseText: textOf(response.value())}
+		if event.ContextMetadata != nil {
+			candidate.conversation = event.ContextMetadata.ConversationID
+			candidate.agent = event.ContextMetadata.AgentID
 		}
-		b.previous = context
-		if responseID != "" {
-			b.contexts[responseID] = context
-			latestResponseID = responseID
-		}
+		b.candidates = append(b.candidates, candidate)
 	}
 	for _, step := range b.document.Steps {
 		observed := map[string]bool{}
@@ -180,85 +195,37 @@ func Build(events []observer.Event, options Options, initial []Diagnostic) (*Doc
 				meta := step.Extra[Namespace].(map[string]any)
 				b.exchange = str(meta["exchange_id"])
 				b.recordIndex, _ = meta["source_record_index"].(int)
-				b.issue("missing_tool_result", "No observed result for tool call "+call.ID+"; execution outcome is unknown.")
+				b.notice("missing_tool_result", "Tool result was not observed; execution outcome remains unknown.")
+				meta["unobserved_tool_result"] = true
 			}
 		}
 	}
-	if len(b.document.Steps) == 0 {
+	if len(events) == 0 || len(b.document.Steps) == 0 {
 		return nil, &EmptyError{}
 	}
-	if options.Strict && len(b.diagnostics) > 0 {
-		return nil, &SemanticError{Diagnostics: b.diagnostics}
+	problems := semanticErrors(b.diagnostics)
+	if options.Strict && len(problems) > 0 {
+		return nil, &SemanticError{Diagnostics: problems}
 	}
 	b.totals["total_steps"] = len(b.document.Steps)
 	b.totals["extra"] = map[string]any{Namespace: map[string]any{"observed_exchanges": len(events), "exchanges_with_usage": b.metricsCount, "exchanges_with_recorded_cost": b.costCount, "usage_coverage_complete": b.metricsComplete == len(events), "cost_coverage_complete": b.costCount == len(events), "includes_known_failed_exchange_metrics": true, "aggregation_basis": "source_records", "distinct_provider_inferences_verified": false}}
 	b.document.FinalMetrics = b.totals
+	b.document.Assets = b.assets
 	state := options.State
 	if state == "" {
 		state = "unknown"
 	}
-	meta := map[string]any{"exporter_version": 1, "source": "events.jsonl", "state": state, "scope": "observed_llm_traffic", "snapshot": state != "stopped", "reconstruction_complete": len(b.diagnostics) == 0, "event_count": len(events), "diagnostics": b.diagnostics, "unmapped": b.fragments}
-	if state == "stopped" {
-		meta["completion_note"] = "Proxy stopped; this does not prove the agent task or unobserved tools completed."
-	}
-	b.document.Extra = map[string]any{Namespace: meta}
+	b.document.Extra = map[string]any{Namespace: map[string]any{"exporter_version": 2, "source": "events.jsonl", "state": state, "scope": "captured_llm_requests_and_responses", "snapshot": state != "stopped", "reconstruction_complete": len(problems) == 0, "captured_input_fidelity": len(problems) == 0, "causal_relationships": "evidence_only", "event_count": len(events), "diagnostics": b.diagnostics, "unmapped": b.fragments, "input_contexts": b.inputContexts, "context_contract": "ordered_context_messages_v1; exact provider request is input_contexts[id].request; provider-side transforms are not observed"}}
 	return &b.document, nil
-}
-
-// overlap only matches context positions, never globally deduplicates equal text.
-func overlap(previous, current []message) (int, bool) {
-	if len(previous) == 0 {
-		return 0, true
-	}
-	if len(current) >= len(previous) {
-		match := true
-		for i := range previous {
-			if fingerprint(previous[i]) != fingerprint(current[i]) {
-				match = false
-				break
-			}
-		}
-		if match {
-			return len(previous), true
-		}
-	}
-	// A unique retained suffix supports context-window truncation. Keep identical
-	// leading system instructions out of the suffix alignment.
-	ps, cs := 0, 0
-	for ps < len(previous) && previous[ps].role == "system" {
-		ps++
-	}
-	for cs < len(current) && current[cs].role == "system" {
-		cs++
-	}
-	if ps != cs {
-		return 0, false
-	}
-	for i := 0; i < ps; i++ {
-		if fingerprint(previous[i]) != fingerprint(current[i]) {
-			return 0, false
-		}
-	}
-	for length := min(len(previous)-ps, len(current)-cs); length > 0; length-- {
-		match := true
-		for i := 0; i < length; i++ {
-			if fingerprint(previous[len(previous)-length+i]) != fingerprint(current[cs+i]) {
-				match = false
-				break
-			}
-		}
-		if match {
-			return cs + length, true
-		}
-	}
-	return 0, false
 }
 
 func (b *builder) add(m message, observed bool, event observer.Event) {
 	if m.role == "tool" {
 		targets := b.calls[m.resultID]
 		if m.resultID == "" || len(targets) != 1 {
-			b.unmapped("orphan_tool_result", "Tool result has no unique observed or supplied call.", m.raw)
+			// The result still exists in its exact standard context checkpoint. Without a
+			// unique originating call, do not fabricate or arbitrarily select a reference.
+			b.notice("unresolved_tool_origin", "Tool result is preserved in its input checkpoint; no unique originating call is established.")
 			return
 		}
 		step := &b.document.Steps[targets[0]]
@@ -267,22 +234,21 @@ func (b *builder) add(m message, observed bool, event observer.Event) {
 		}
 		for _, result := range step.Observation.Results {
 			if result.CallID == m.resultID {
-				if result.Content != m.text {
-					b.unmapped("conflicting_tool_result", "Different results refer to the same tool call.", m.raw)
+				if digestJSON(result.Content) != digestJSON(m.value()) {
+					b.notice("tool_result_changed", "Different observations for the same tool ID are preserved in their per-call checkpoints.")
 				}
 				return
 			}
 		}
-		step.Observation.Results = append(step.Observation.Results, Result{CallID: m.resultID, Content: m.text, Extra: map[string]any{Namespace: map[string]any{"observed_in_exchange": b.exchange, "observed_in_record": b.recordIndex, "provider_result": m.raw}}})
+		step.Observation.Results = append(step.Observation.Results, Result{CallID: m.resultID, Content: m.value(), Extra: map[string]any{Namespace: map[string]any{"observed_in_exchange": b.exchange, "observed_in_record": b.recordIndex, "provider_result": m.raw}}})
 		return
 	}
-	step := Step{ID: len(b.document.Steps) + 1, Source: m.role, Message: m.text}
-	meta := map[string]any{"exchange_id": b.exchange, "source_record_index": b.recordIndex, "observed_response": observed}
+	step := Step{ID: len(b.document.Steps) + 1, Source: m.role, Message: m.value()}
+	meta := b.provenance()
+	meta["observed_response"] = observed
 	if !observed {
 		meta["origin"] = "request_context"
-		if role := str(object(m.raw)["role"]); role != "" {
-			meta["original_role"] = role
-		}
+		meta["original_role"] = roleOf(m)
 	}
 	if observed && event.CompletedAtMS > 0 {
 		step.Timestamp = time.UnixMilli(event.CompletedAtMS).UTC().Format(time.RFC3339Nano)
@@ -295,7 +261,7 @@ func (b *builder) add(m message, observed bool, event observer.Event) {
 	for _, tool := range step.Tools {
 		b.calls[tool.ID] = append(b.calls[tool.ID], len(b.document.Steps))
 		if len(b.calls[tool.ID]) > 1 {
-			b.issue("duplicate_tool_id", "Tool call ID is not unique: "+tool.ID)
+			b.notice("duplicate_tool_id", "Repeated tool ID retained; result attribution requires a unique origin.")
 		}
 	}
 	b.document.Steps = append(b.document.Steps, step)

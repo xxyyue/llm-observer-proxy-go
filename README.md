@@ -173,9 +173,11 @@ llm-observer-proxy export --events /path/to/events.jsonl --output trajectory.ati
 ```
 
 Export reconstructs observed history across requests and links visible tool results.
-Add `strict=true` to HTTP or `--strict` to CLI to reject ambiguous/incomplete
-reconstruction. Default exports include explicit diagnostics under
+Add `strict=true` to HTTP or `--strict` to CLI to reject unsupported/lossy
+representation. Default exports include explicit diagnostics under
 `extra.llm_observer_proxy`. Original event logs remain unchanged.
+Use `--package zip` (HTTP `?package=zip`) for portable standard image resources.
+Every captured call retains its submitted context across compaction and branch changes.
 See [trajectory export](docs/trajectory-export.md) for metadata, accounting,
 compatibility limits, and validation.
 

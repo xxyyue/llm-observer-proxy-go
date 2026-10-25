@@ -12,27 +12,36 @@ import (
 	"sync"
 )
 
+// ContextMetadata is optional producer evidence, separate from provider payloads.
+type ContextMetadata struct {
+	ConversationID   string `json:"conversation_id,omitempty"`
+	AgentID          string `json:"agent_id,omitempty"`
+	ParentExchangeID string `json:"parent_exchange_id,omitempty"`
+	Operation        string `json:"operation,omitempty"`
+}
+
 type Event struct {
-	ExchangeID          string         `json:"exchange_id"`
-	RunID               string         `json:"run_id,omitempty"`
-	StartedAtMS         int64          `json:"started_at_ms"`
-	CompletedAtMS       int64          `json:"completed_at_ms"`
-	Method              string         `json:"method"`
-	Path                string         `json:"path"`
-	QueryString         string         `json:"query_string"`
-	UpstreamURL         string         `json:"upstream_url"`
-	RequestHeaders      map[string]any `json:"request_headers"`
-	RequestBody         *string        `json:"request_body"`
-	RequestBodyEncoding string         `json:"request_body_encoding"`
-	RequestJSON         any            `json:"request_json"`
-	ResponseStatus      *int           `json:"response_status"`
-	ResponseHeaders     map[string]any `json:"response_headers"`
-	ResponseBody        *string        `json:"response_body"`
-	ResponseEncoding    string         `json:"response_body_encoding"`
-	ResponseJSON        any            `json:"response_json"`
-	Stream              bool           `json:"stream"`
-	Error               *string        `json:"error"`
-	Normalized          map[string]any `json:"normalized"`
+	ContextMetadata     *ContextMetadata `json:"context_metadata,omitempty"`
+	ExchangeID          string           `json:"exchange_id"`
+	RunID               string           `json:"run_id,omitempty"`
+	StartedAtMS         int64            `json:"started_at_ms"`
+	CompletedAtMS       int64            `json:"completed_at_ms"`
+	Method              string           `json:"method"`
+	Path                string           `json:"path"`
+	QueryString         string           `json:"query_string"`
+	UpstreamURL         string           `json:"upstream_url"`
+	RequestHeaders      map[string]any   `json:"request_headers"`
+	RequestBody         *string          `json:"request_body"`
+	RequestBodyEncoding string           `json:"request_body_encoding"`
+	RequestJSON         any              `json:"request_json"`
+	ResponseStatus      *int             `json:"response_status"`
+	ResponseHeaders     map[string]any   `json:"response_headers"`
+	ResponseBody        *string          `json:"response_body"`
+	ResponseEncoding    string           `json:"response_body_encoding"`
+	ResponseJSON        any              `json:"response_json"`
+	Stream              bool             `json:"stream"`
+	Error               *string          `json:"error"`
+	Normalized          map[string]any   `json:"normalized"`
 }
 
 type Recorder struct {

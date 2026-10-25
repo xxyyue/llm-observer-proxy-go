@@ -105,6 +105,8 @@ The response reconstructs the most recent observable exchange into messages, too
 ```http
 GET /api/runs/{run_id}/trajectory?format=atif&version=1.7
 GET /api/runs/{run_id}/trajectory?strict=true
+GET /api/runs/{run_id}/trajectory?package=zip
+GET /api/runs/{run_id}/trajectory/assets/images/{digest}.{ext}
 ```
 
 Returns an ATIF v1.7 JSON document as an attachment, reconstructed from the full
@@ -117,6 +119,11 @@ include `diagnostics`. Read failures or corrupt complete JSONL records return
 
 Default mode preserves unsupported or ambiguous content under namespaced `extra`
 with diagnostics. It never silently presents a partial reconstruction as complete.
+JSON image references use absolute URLs on the serving origin; ZIP includes portable
+relative resources. `package` accepts `json` or `zip`; `image_media_type` supplies
+a caller-confirmed MIME for otherwise untyped external images. Reserved observer
+request headers provide optional causal/context hints and are never forwarded.
+
 See [trajectory export](trajectory-export.md) for the full contract and CLI.
 
 ## Debug List

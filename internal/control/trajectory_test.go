@@ -54,7 +54,7 @@ func TestTrajectoryHTTPAndRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	response.Body.Close()
-	if response.StatusCode != 200 || response.Header.Get("Content-Disposition") == "" || document.SchemaVersion != "ATIF-v1.7" || document.Agent.Name != "test-agent" || len(document.Steps) != 2 {
+	if response.StatusCode != 200 || response.Header.Get("Content-Disposition") == "" || document.SchemaVersion != "ATIF-v1.7" || document.Agent.Name != "test-agent" || len(document.Steps) != 3 {
 		t.Fatalf("unexpected export: %#v", document)
 	}
 	if !document.Extra[trajectory.Namespace].(map[string]any)["snapshot"].(bool) {

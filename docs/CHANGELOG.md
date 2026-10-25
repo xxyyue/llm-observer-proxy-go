@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Preserve every captured request through standard ATIF context checkpoints and exact typed input manifests, with evidence-based context relationships and operational records.
+- Export validated standard image parts with deduplicated resources, portable JSON/ZIP and run-scoped HTTP resource retrieval.
+- Capture optional producer context hints and stable response exchange IDs without forwarding reserved headers.
+
 - Add ATIF v1.7 trajectory downloads and offline `export` command while retaining
   `events.jsonl` and the existing history/conversation formats.
 - Reconstruct sequential text trajectories, associate tool results, preserve

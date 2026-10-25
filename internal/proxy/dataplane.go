@@ -53,7 +53,7 @@ func (p *DataPlane) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 		return
 	}
 	var requestJSON any
-	if len(bytes.TrimSpace(body)) > 0 && json.Unmarshal(body, &requestJSON) != nil {
+	if len(bytes.TrimSpace(body)) > 0 && decodeRecordedJSON(body, &requestJSON) != nil {
 		requestJSON = nil
 	}
 	requestMap, _ := requestJSON.(map[string]any)
@@ -73,6 +73,13 @@ func (p *DataPlane) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 		Headers:  safeHeaders(request.Header),
 	}
 
+	id := exchangeID()
+	writer.Header().Set("X-LLM-Observer-Exchange-ID", id)
+	contextMetadata, metadataError := captureContextMetadata(request.Header)
+	if metadataError != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]any{"error": metadataError.Error()})
+		return
+	}
 	status := 0
 	responseHeaders := map[string]string{}
 	var responseBody bytes.Buffer
@@ -89,11 +96,12 @@ func (p *DataPlane) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 	requestBody := nullableString(body)
 	responseBodyText := nullableString(responseBody.Bytes())
 	var responseJSON any
-	if responseBody.Len() > 0 && json.Unmarshal(responseBody.Bytes(), &responseJSON) != nil {
+	if responseBody.Len() > 0 && decodeRecordedJSON(responseBody.Bytes(), &responseJSON) != nil {
 		responseJSON = nil
 	}
 	event := &observer.Event{
-		ExchangeID:          exchangeID(),
+		ExchangeID:          id,
+		ContextMetadata:     contextMetadata,
 		RunID:               p.runID,
 		StartedAtMS:         started.UnixMilli(),
 		CompletedAtMS:       completed.UnixMilli(),
@@ -197,7 +205,7 @@ func (p *DataPlane) forwardStream(writer http.ResponseWriter, request *http.Requ
 func safeHeaders(headers http.Header) map[string]string {
 	result := make(map[string]string)
 	for key, values := range headers {
-		if isHopByHop(key) || strings.EqualFold(key, "Authorization") || strings.EqualFold(key, "x-api-key") || strings.EqualFold(key, "Content-Length") {
+		if strings.HasPrefix(strings.ToLower(key), "x-llm-observer-") || isHopByHop(key) || strings.EqualFold(key, "Authorization") || strings.EqualFold(key, "x-api-key") || strings.EqualFold(key, "Content-Length") {
 			continue
 		}
 		if len(values) > 0 {
@@ -221,7 +229,7 @@ func redactedHeaders(headers http.Header) map[string]any {
 
 func copyResponseHeaders(destination http.Header, source map[string]string) {
 	for key, value := range source {
-		if !isHopByHop(key) && !strings.EqualFold(key, "Content-Length") {
+		if !strings.HasPrefix(strings.ToLower(key), "x-llm-observer-") && !isHopByHop(key) && !strings.EqualFold(key, "Content-Length") {
 			destination.Set(key, value)
 		}
 	}
@@ -283,4 +291,44 @@ func writeJSON(writer http.ResponseWriter, status int, payload any) {
 	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
 	writer.WriteHeader(status)
 	_ = json.NewEncoder(writer).Encode(payload)
+}
+
+func decodeRecordedJSON(data []byte, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return fmt.Errorf("expected one JSON value")
+	}
+	return nil
+}
+
+func captureContextMetadata(headers http.Header) (*observer.ContextMetadata, error) {
+	keys := []string{"Conversation-ID", "Agent-ID", "Parent-Exchange-ID", "Context-Operation"}
+	values := make([]string, len(keys))
+	present := false
+	for i, key := range keys {
+		raw := headers.Values("X-LLM-Observer-" + key)
+		if len(raw) > 1 {
+			return nil, fmt.Errorf("observer metadata header must occur once")
+		}
+		value := headers.Get("X-LLM-Observer-" + key)
+		if len(value) > 256 || strings.ContainsAny(value, "\r\n\x00") {
+			return nil, fmt.Errorf("observer metadata header is invalid or exceeds 256 bytes")
+		}
+		values[i] = value
+		present = present || value != ""
+	}
+	if !present {
+		return nil, nil
+	}
+	switch values[3] {
+	case "", "snapshot", "compaction", "pruning", "replacement", "restore", "injection":
+	default:
+		return nil, fmt.Errorf("unsupported observer context operation")
+	}
+	return &observer.ContextMetadata{ConversationID: values[0], AgentID: values[1], ParentExchangeID: values[2], Operation: values[3]}, nil
 }

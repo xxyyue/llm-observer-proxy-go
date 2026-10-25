@@ -4,6 +4,8 @@ package observer
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"math"
 	"sort"
 	"strings"
@@ -139,7 +141,7 @@ func normalizeStream(body string, normalized map[string]any) {
 			continue
 		}
 		var event map[string]any
-		if json.Unmarshal([]byte(payload), &event) != nil {
+		if decodeJSONNumbers([]byte(payload), &event) != nil {
 			continue
 		}
 		if choices, ok := event["choices"].([]any); ok && len(choices) > 0 {
@@ -275,7 +277,7 @@ func normalizeStream(body string, normalized map[string]any) {
 			tool := anthropicTools[index]
 			if arguments := anthropicArguments[index]; arguments != "" {
 				var parsed any
-				if json.Unmarshal([]byte(arguments), &parsed) == nil {
+				if decodeJSONNumbers([]byte(arguments), &parsed) == nil {
 					tool["input"] = parsed
 				} else {
 					tool["input"] = arguments
@@ -292,7 +294,7 @@ func normalizeStream(body string, normalized map[string]any) {
 	}
 	if text.Len() == 0 && len(tools) == 0 && len(reasoning) == 0 {
 		var response map[string]any
-		if json.Unmarshal([]byte(body), &response) == nil {
+		if decodeJSONNumbers([]byte(body), &response) == nil {
 			normalizeResponse(response, normalized)
 		}
 	}
@@ -334,7 +336,7 @@ func extractUsage(response map[string]any, body string, stream bool) map[string]
 				continue
 			}
 			var event map[string]any
-			if json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &event) != nil {
+			if decodeJSONNumbers([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &event) != nil {
 				continue
 			}
 			mergeUsage(usage, event["usage"])
@@ -347,7 +349,7 @@ func extractUsage(response map[string]any, body string, stream bool) map[string]
 		}
 		if len(usage) == 0 {
 			var payload map[string]any
-			if json.Unmarshal([]byte(body), &payload) == nil {
+			if decodeJSONNumbers([]byte(body), &payload) == nil {
 				mergeUsage(usage, payload["usage"])
 			}
 		}
@@ -515,4 +517,18 @@ func floatValue(value any) float64 {
 
 func round12(value float64) float64 {
 	return math.Round(value*1e12) / 1e12
+}
+
+// decodeJSONNumbers retains exact integer tool arguments in captured streams.
+func decodeJSONNumbers(data []byte, target any) error {
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.UseNumber()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return fmt.Errorf("expected one JSON value")
+	}
+	return nil
 }

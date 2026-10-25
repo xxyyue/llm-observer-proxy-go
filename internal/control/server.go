@@ -3,6 +3,7 @@
 package control
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -29,6 +30,19 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	}
 	if request.Method == http.MethodGet && request.URL.Path == "/api/proxies" {
 		writeJSON(writer, http.StatusOK, map[string]any{"items": s.manager.List()})
+		return
+	}
+	parts := strings.Split(strings.Trim(request.URL.Path, "/"), "/")
+	if request.Method == http.MethodGet && len(parts) == 7 && parts[0] == "api" && parts[1] == "runs" && parts[3] == "trajectory" && parts[4] == "assets" {
+		asset, err := s.manager.TrajectoryAsset(parts[2], strings.Join(parts[5:], "/"))
+		if err != nil {
+			http.NotFound(writer, request)
+			return
+		}
+		writer.Header().Set("Content-Type", asset.MediaType)
+		writer.Header().Set("Cache-Control", "no-store")
+		writer.Header().Set("X-Content-Type-Options", "nosniff")
+		writer.Write(asset.Data)
 		return
 	}
 	runID, action, ok := parseRunPath(request.URL.Path)
@@ -208,7 +222,12 @@ func writeJSON(writer http.ResponseWriter, status int, payload any) {
 }
 
 func (s *Server) trajectory(writer http.ResponseWriter, request *http.Request, runID string) {
-	options := trajectory.Options{Format: request.URL.Query().Get("format"), Version: request.URL.Query().Get("version")}
+	packaging := request.URL.Query().Get("package")
+	if packaging != "" && packaging != "json" && packaging != "zip" {
+		writeJSON(writer, 400, map[string]any{"error": "package must be json or zip"})
+		return
+	}
+	options := trajectory.Options{ImageMediaType: request.URL.Query().Get("image_media_type"), Format: request.URL.Query().Get("format"), Version: request.URL.Query().Get("version")}
 	if err := options.Validate(); err != nil {
 		writeJSON(writer, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
@@ -239,7 +258,38 @@ func (s *Server) trajectory(writer http.ResponseWriter, request *http.Request, r
 		writeJSON(writer, http.StatusNotFound, map[string]any{"error": "Run history not found"})
 		return
 	}
+	if packaging == "zip" {
+		var data bytes.Buffer
+		if err := trajectory.WriteZIP(&data, document); err != nil {
+			writeJSON(writer, 500, map[string]any{"error": "cannot package trajectory"})
+			return
+		}
+		writer.Header().Set("Content-Type", "application/zip")
+		writer.Header().Set("Content-Disposition", `attachment; filename="trajectory.atif.zip"`)
+		writer.Header().Set("Cache-Control", "no-store")
+		writer.Write(data.Bytes())
+		return
+	}
+	if len(document.Assets) > 0 {
+		if err := s.manager.PublishTrajectoryAssets(runID, document); err != nil {
+			writeJSON(writer, 500, map[string]any{"error": "cannot publish trajectory resources"})
+			return
+		}
+		document, err = document.WithAssetPaths(servingOrigin(request) + "/api/runs/" + runID + "/trajectory/assets")
+		if err != nil {
+			writeJSON(writer, 500, map[string]any{"error": "cannot map trajectory resources"})
+			return
+		}
+	}
 	writer.Header().Set("Content-Disposition", `attachment; filename="trajectory.atif.json"`)
 	writer.Header().Set("Cache-Control", "no-store")
 	writeJSON(writer, http.StatusOK, document)
+}
+
+func servingOrigin(request *http.Request) string {
+	scheme := "http"
+	if request.TLS != nil {
+		scheme = "https"
+	}
+	return scheme + "://" + request.Host
 }

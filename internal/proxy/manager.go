@@ -324,3 +324,17 @@ func (m *Manager) Trajectory(runID string, options trajectory.Options) (*traject
 	document, err := trajectory.ExportFile(path, options)
 	return document, true, err
 }
+
+// PublishTrajectoryAssets keeps generated resources scoped to the owning run.
+func (m *Manager) PublishTrajectoryAssets(runID string, document *trajectory.Document) error {
+	if err := ValidateRunID(runID); err != nil {
+		return err
+	}
+	return trajectory.WriteAssets(filepath.Join(m.runRoot(runID), ".atif-assets"), document.Assets)
+}
+func (m *Manager) TrajectoryAsset(runID, key string) (trajectory.Asset, error) {
+	if err := ValidateRunID(runID); err != nil {
+		return trajectory.Asset{}, err
+	}
+	return trajectory.ReadAsset(filepath.Join(m.runRoot(runID), ".atif-assets"), key)
+}
