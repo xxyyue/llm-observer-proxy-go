@@ -177,7 +177,8 @@ Add `strict=true` to HTTP or `--strict` to CLI to reject unsupported/lossy
 representation. Default exports include explicit diagnostics under
 `extra.llm_observer_proxy`. Original event logs remain unchanged.
 Use `--package zip` (HTTP `?package=zip`) for portable standard image resources.
-Every captured call retains its submitted context across compaction and branch changes.
+Every captured call retains a semantic context checkpoint across compaction and branch changes.
+Raw request/response data stays in `events.jsonl`; it is not duplicated into ATIF `extra`.
 See [trajectory export](docs/trajectory-export.md) for metadata, accounting,
 compatibility limits, and validation.
 

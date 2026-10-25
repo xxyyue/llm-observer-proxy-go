@@ -12,16 +12,17 @@ import (
 )
 
 type contextCandidate struct {
-	record       int
-	exchangeID   string
-	responseID   string
-	branch       string
-	conversation string
-	agent        string
-	completed    int64
-	messages     []message
-	contextID    string
-	responseText string
+	record          int
+	exchangeID      string
+	responseID      string
+	branch          string
+	conversation    string
+	agent           string
+	completed       int64
+	messages        []message
+	contextID       string
+	configurationID string
+	responseText    string
 }
 
 type contextMatch struct {
@@ -109,25 +110,15 @@ func contextConfiguration(request map[string]any) map[string]any {
 	return result
 }
 
-func (b *builder) captureContext(event observer.Event, messages []message) string {
+// captureContext computes identity without copying source payloads into ATIF.
+func (b *builder) captureContext(event observer.Event) string {
 	id := digestJSON(map[string]any{"path": event.Path, "request": event.RequestJSON, "request_body": event.RequestBody})
-	if _, exists := b.inputContexts[id]; exists {
-		return id
-	}
-	value := map[string]any{"path": event.Path, "request": event.RequestJSON, "projection": projected(messages), "configuration": contextConfiguration(object(event.RequestJSON)), "fidelity": "captured_typed_request", "provider_state": "not_observed"}
 	if event.RequestBody != nil {
-		body := *event.RequestBody
-		hash := sha256.Sum256([]byte(body))
-		value["request_body_sha256"] = hex.EncodeToString(hash[:])
 		var decoded any
-		equal := decodeJSON([]byte(body), &decoded) == nil && digestJSON(decoded) == digestJSON(event.RequestJSON)
-		value["typed_matches_request_body"] = equal
-		if !equal {
-			value["raw_request_body"] = body
-			b.notice("captured_body_differs", "Typed request and captured body differ; both are preserved, wire equivalence is not asserted.")
+		if decodeJSON([]byte(*event.RequestBody), &decoded) != nil || digestJSON(decoded) != digestJSON(event.RequestJSON) {
+			b.notice("captured_body_differs", "Typed request differs from the recorded body; raw evidence remains in events.jsonl.")
 		}
 	}
-	b.inputContexts[id] = value
 	return id
 }
 
@@ -173,13 +164,13 @@ func suffixMatch(previous, current []message) int {
 }
 
 // matchContext consults all prior contexts. Parent relationships are evidence,
-// never a prerequisite for preserving the exact submitted input checkpoint.
+// never a prerequisite for preserving the semantic input checkpoint.
 func (b *builder) matchContext(event observer.Event, messages []message, contextID string) contextMatch {
 	hints := event.ContextMetadata
 	match := contextMatch{kind: "replacement", evidence: "observed_request", branch: fmt.Sprintf("context-%d", b.recordIndex)}
 	if len(b.candidates) == 0 {
 		if str(object(event.RequestJSON)["previous_response_id"]) != "" {
-			b.notice("unknown_previous_response", "Initial request references unobserved provider state; captured request is exact, full effective context is unknown.")
+			b.notice("unknown_previous_response", "Initial request references unobserved provider state; only submitted message content is projected; full effective context is unknown.")
 		}
 		match.kind = "snapshot"
 		match.evidence = "initial_capture"
@@ -285,10 +276,10 @@ func (b *builder) matchContext(event observer.Event, messages []message, context
 		} else {
 			match.kind = "replacement"
 			match.evidence = "multiple_parent_candidates"
-			b.notice("ambiguous_parent", "Several causal parents remain possible; checkpoint input is exact and no parent is chosen.")
+			b.notice("ambiguous_parent", "Several causal parents remain possible; checkpoint content is projected and no parent is chosen.")
 		}
 	} else if explicitParent != "" || previousID != "" {
-		b.notice("unknown_previous_response", "Referenced predecessor is absent; this captured request remains an exact standalone checkpoint.")
+		b.notice("unknown_previous_response", "Referenced predecessor is absent; its submitted message content is projected without claiming full effective context.")
 	}
 	// An adopted summary is positive evidence, not a keyword-only guess. The
 	// complete output must occur verbatim in a known continuation wrapper, and a
@@ -311,13 +302,13 @@ func (b *builder) matchContext(event observer.Event, messages []message, context
 	}
 	if match.kind == "snapshot" {
 		// Even a structural append may prune thinking blocks or change tool schemas
-		// and parameters. Every call still receives its exact checkpoint.
+		// and parameters. Every call still receives its semantic checkpoint.
 		last := b.candidates[len(b.candidates)-1]
 		if match.append && len(messages) >= len(last.messages) && digestJSON(projected(last.messages)) != digestJSON(projected(messages[:len(last.messages)])) {
 			match.kind = "pruning"
 			match.evidence = "observed_context_fields_changed"
 		}
-		if last.contextID != contextID && digestJSON(b.inputContexts[last.contextID].(map[string]any)["configuration"]) != digestJSON(contextConfiguration(object(event.RequestJSON))) {
+		if last.contextID != contextID && last.configurationID != digestJSON(contextConfiguration(object(event.RequestJSON))) {
 			match.kind = "configuration_change"
 		}
 	}
@@ -348,7 +339,7 @@ func (b *builder) boundary(event observer.Event, messages []message, contextID s
 		results = append(results, Result{Content: m.value(), Extra: map[string]any{"context_message": description}})
 	}
 	// An empty captured message list is still a legitimate checkpoint (e.g. an
-	// opaque server-side continuation). The raw request keeps its reference.
+	// opaque server-side continuation). The source log keeps the original request.
 	meta := b.provenance()
 	meta["input_context_id"] = contextID
 	meta["source_started_at_ms"] = event.StartedAtMS
@@ -359,7 +350,7 @@ func (b *builder) boundary(event observer.Event, messages []message, contextID s
 	meta["branch_id"] = match.branch
 	meta["parent_source_record_candidates"] = match.parents
 	meta["relationship_evidence"] = match.evidence
-	meta["context_configuration"] = contextConfiguration(object(event.RequestJSON))
+	meta["configuration_id"] = digestJSON(contextConfiguration(object(event.RequestJSON)))
 	meta["projection_contract"] = "ordered_context_messages_v1"
 	meta["origin"] = "captured_request_checkpoint"
 	step := Step{ID: len(b.document.Steps) + 1, Source: "system", Message: "Captured model input context", Observation: &Observation{Results: results}, Extra: map[string]any{"context_management": map[string]any{"type": match.kind, "boundary": "replace"}, Namespace: meta}}

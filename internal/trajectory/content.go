@@ -62,7 +62,7 @@ func (b *builder) standardContent(v any) any {
 	}
 	items, ok := v.([]any)
 	if !ok {
-		b.unmapped("unsupported_content", "Unexpected content retained in export metadata.", v)
+		b.issue("unsupported_content", "Unexpected content remains in the source record.")
 		return ""
 	}
 	parts := []ContentPart{}
@@ -70,28 +70,28 @@ func (b *builder) standardContent(v any) any {
 	for _, raw := range items {
 		part, ok := raw.(map[string]any)
 		if !ok {
-			b.unmapped("unsupported_content", "Unsupported content retained in export metadata.", raw)
+			b.issue("unsupported_content", "Unsupported content remains in the source record.")
 			continue
 		}
 		switch str(part["type"]) {
 		case "text", "input_text", "output_text", "summary_text":
 			text, ok := part["text"].(string)
 			if !ok {
-				b.unmapped("unsupported_content", "Text content is not a string.", raw)
+				b.issue("unsupported_content", "Text content is not a string.")
 				continue
 			}
 			parts = append(parts, ContentPart{Type: "text", Text: &text})
 		case "image", "image_url", "input_image":
 			source, err := b.standardImage(part)
 			if err != nil {
-				b.unmapped("invalid_image", err.Error(), raw)
+				b.issue("invalid_image", err.Error())
 				continue
 			}
 			parts = append(parts, ContentPart{Type: "image", Source: source})
 			hasImage = true
 		case "tool_use", "tool_result", "thinking", "redacted_thinking":
 		default:
-			b.unmapped("unsupported_content", "Unsupported content retained in export metadata.", raw)
+			b.issue("unsupported_content", "Unsupported content remains in the source record.")
 		}
 	}
 	if hasImage || len(parts) > 1 {
@@ -178,7 +178,7 @@ func (b *builder) standardImage(part map[string]any) (*ImageSource, error) {
 			mime = "image/webp"
 		}
 		if mime != "" {
-			b.unmapped("inferred_image_media_type", "Image URL media type inferred from filename; remote bytes were not fetched or verified.", part)
+			b.issue("inferred_image_media_type", "Image URL media type inferred from filename; remote bytes were not fetched or verified.")
 		}
 	}
 	if mediaExtensions[mime] == "" {

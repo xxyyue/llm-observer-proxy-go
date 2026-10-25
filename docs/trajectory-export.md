@@ -79,9 +79,9 @@ and text/tool SSE responses. Complete buffered JSON remains valid even when the
 request asked for streaming. Export reads the full log, retaining all earlier
 observed responses when the agent replaces, prunes or summarizes its context.
 
-Each source record has a standard ATIF system checkpoint immediately before its
+Each source record has a standard ATIF semantic context checkpoint immediately before its
 response or operational event. `step.extra.context_management` has
-`boundary: "replace"`; its observation contains the ordered submitted messages.
+`boundary: "replace"`; its observation contains the supported text/image messages and tool context.
 The default `type: "snapshot"` is an export checkpoint, not a claim that the runtime
 performed compaction. Structural prefix/suffix matches consider all prior
 completed contexts, explicit response IDs, producer hints and tool relationships.
@@ -100,32 +100,33 @@ Only new interactions on a known continuation get extra standalone turns; retain
 history is not reclassified as new observed agent calls. Initial supplied assistant
 history has `observed_response: false` and no invented usage or timestamps.
 
-Two consumer contracts are intentionally separate:
+The export contains a semantic ATIF projection, not a copy of the event log.
+Standard viewers can display text/images and apply replacement boundaries. Each
+observation result's `extra.context_message` retains only the role, interpreted tool
+calls/result ID and readable reasoning needed to understand that context. Consumers
+implementing `ordered_context_messages_v1` recover this semantic message projection;
+developer roles remain distinguishable. Anthropic tool-result envelopes and adjacent
+Responses assistant items can be flattened by the projection.
 
-1. Standard ATIF viewers can display all text/images and apply replacement
-   boundaries. Each observation result's `extra.context_message` supplies its role,
-   tool calls/result ID and readable reasoning; boundary
-   `extra.llm_observer_proxy.context_configuration` supplies tools and request
-   parameters. Consumers implementing `ordered_context_messages_v1` recover the
-   submitted semantic message projection. Developer roles remain distinguishable.
-2. Exact provider-shaped replay uses the boundary/response `input_context_id` to
-   look up `extra.llm_observer_proxy.input_contexts[id].request`. This preserves
-   typed message envelopes, block order, cache controls, system/instructions,
-   Responses items, tool schemas, parameters and large JSON integers. Anthropic
-   tool-result envelopes and adjacent Responses assistant items may be flattened
-   in the semantic projection, so generic ATIF viewers alone cannot reproduce
-   those provider envelope details. Raw body hashes are included when available;
-   differing raw bodies are retained separately and not claimed wire-equivalent.
+`extra.llm_observer_proxy` is limited to lightweight identities, provenance,
+relationship evidence, numeric accounting and static diagnostics. `input_context_id`
+and `configuration_id` are hashes for matching/change detection, not references to
+embedded request data. There is no request/configuration pool, raw request body,
+raw response/error payload, provider result/usage copy or unmapped fragment dump.
+Tools available to the provider, arbitrary generation parameters, cache-control
+configuration and provider-specific envelopes remain solely in `events.jsonl`.
+Exact provider request replay requires the original log. This intentionally gives
+up the earlier exporter's duplicated full-request manifests.
 
-These contracts describe the **captured request/submitted context**. Provider-side
-context transformations, tokenization and opaque server state are not observed.
-`previous_response_id` is retained as a reference; even when a predecessor is
-visible, the export does not claim to know hidden provider state. Context-management
-request directives are preserved, not interpreted as evidence of their execution.
-No multi-agent hierarchy or verified provider inference count is fabricated.
+Provider-side context transforms, tokenization and opaque server state are not
+observable. Explicit parent references are evidence only. A typed request/body
+mismatch produces `captured_body_differs`; the projection follows the captured typed
+record and makes no wire-fidelity claim. Unsupported semantic content is diagnosed
+by code/source position, remains in the original log, and fails strict mode. No
+multi-agent hierarchy or verified provider inference count is fabricated.
 
 Tool results attach to a unique originating call in the same ATIF step. If no
-unique origin exists, the result remains in its exact input checkpoint with an
+unique origin exists, the result remains in its semantic input checkpoint with an
 informational diagnostic. Missing results stay unknown. Start times order records
 when all are available; overlaps remain explicit. Stable `source_record_index`
 identifies original log positions even when IDs are reused or rows are duplicated.
@@ -143,9 +144,9 @@ Diagnostics have `severity: info` or `error`. Strict mode rejects representation
 loss: invalid tool arguments, unsupported/malformed media or content, invalid usage,
 malformed stream payloads and torn log tails. Ordinary context operations, unknown
 causal parents, missing outcomes and captured HTTP failures do not fail strict when
-represented faithfully. `captured_input_fidelity`/`reconstruction_complete` refer to
-supported representation of captured data, never completion of the agent task or
-full hidden model context. Audio and structured output-stream media without an
+represented faithfully. `semantic_projection_complete`/`reconstruction_complete` refer to
+supported ATIF semantic mapping, never exact provider request reconstruction,
+completion of the agent task or full hidden model context. Audio and structured output-stream media without an
 assembled supported representation are diagnosed and rejected by strict mode.
 
 ## Images and portable resources
@@ -161,7 +162,7 @@ Remote HTTP(S) references are never downloaded. Supply explicit `media_type` in 
 source or use `--image-media-type image/png` / HTTP `image_media_type=image/png`
 when the caller knows an otherwise untyped reference's MIME. Filename inference is
 reported as uncertain and rejected by strict mode. An opaque URL is not assigned
-an invented JPEG MIME. Original data remains in protected request metadata too.
+an invented JPEG MIME. Original inline data remains in the source log; the ATIF export contains image resource references.
 
 CLI JSON publishes a portable `<output filename>.assets-<unique suffix>/images/...` directory and
 then atomically replaces JSON. New resources are rolled back on publication failure;

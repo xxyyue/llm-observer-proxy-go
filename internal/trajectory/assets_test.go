@@ -18,7 +18,7 @@ func assetDocument(t *testing.T) (*Document, string, []byte) {
 	data := syntheticImage(t, "png")
 	key := assetKey(data, "image/png")
 	content := []ContentPart{{Type: "image", Source: &ImageSource{MediaType: "image/png", Path: key}}}
-	return &Document{SchemaVersion: "ATIF-v1.7", Assets: map[string]Asset{key: {Data: data, MediaType: "image/png"}}, Steps: []Step{{ID: 1, Source: "user", Message: content, Observation: &Observation{Results: []Result{{CallID: "1", Content: content}}}}}, Extra: map[string]any{"input_context": content, "exact_number": json.Number("9007199254740993")}}, key, data
+	return &Document{SchemaVersion: "ATIF-v1.7", Assets: map[string]Asset{key: {Data: data, MediaType: "image/png"}}, Steps: []Step{{ID: 1, Source: "user", Message: content, Observation: &Observation{Results: []Result{{CallID: "1", Content: content}}}}}, Extra: map[string]any{"exact_number": json.Number("9007199254740993")}}, key, data
 }
 func realTempDir(t *testing.T) string {
 	t.Helper()
@@ -89,7 +89,7 @@ func TestAssetSymlinksRejected(t *testing.T) {
 		t.Fatal("root symlink accepted")
 	}
 }
-func TestJSONPublishesPortableResourcesWithoutChangingRawContext(t *testing.T) {
+func TestJSONPublishesPortableResourcesWithoutChangingMetadata(t *testing.T) {
 	document, key, data := assetDocument(t)
 	root := realTempDir(t)
 	source := filepath.Join(root, "events.jsonl")
@@ -107,7 +107,7 @@ func TestJSONPublishesPortableResourcesWithoutChangingRawContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	if loaded.Extra["exact_number"] != json.Number("9007199254740993") {
-		t.Fatal("raw context number changed")
+		t.Fatal("metadata number changed")
 	}
 	parts := loaded.Steps[0].Message.([]any)
 	location := object(object(parts[0])["source"])["path"].(string)
@@ -121,10 +121,7 @@ func TestJSONPublishesPortableResourcesWithoutChangingRawContext(t *testing.T) {
 	if document.Steps[0].Message.([]ContentPart)[0].Source.Path != key {
 		t.Fatal("input mutated")
 	}
-	original := loaded.Extra["input_context"].([]any)
-	if object(object(original[0])["source"])["path"] != key {
-		t.Fatal("raw context rewritten")
-	}
+
 	result := loaded.Steps[0].Observation.Results[0].Content.([]any)
 	if object(object(result[0])["source"])["path"] != location {
 		t.Fatal("observation image missing rewrite")

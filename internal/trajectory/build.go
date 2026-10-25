@@ -16,9 +16,7 @@ type builder struct {
 	exchange        string
 	recordIndex     int
 	diagnostics     []Diagnostic
-	fragments       []any
 	calls           map[string][]int
-	inputContexts   map[string]any
 	candidates      []contextCandidate
 	totals          map[string]any
 	metricsCount    int
@@ -31,10 +29,6 @@ func (b *builder) issue(code, text string) {
 }
 func (b *builder) notice(code, text string) {
 	b.diagnostics = append(b.diagnostics, Diagnostic{Severity: "info", Code: code, Message: text, ExchangeID: b.exchange, SourceRecordIndex: b.recordIndex})
-}
-func (b *builder) unmapped(code, text string, value any) {
-	b.issue(code, text)
-	b.fragments = append(b.fragments, map[string]any{"exchange_id": b.exchange, "source_record_index": b.recordIndex, "kind": code, "value": value})
 }
 func (b *builder) provenance() map[string]any {
 	return map[string]any{"exchange_id": b.exchange, "source_record_index": b.recordIndex}
@@ -49,13 +43,13 @@ func semanticErrors(diagnostics []Diagnostic) []Diagnostic {
 	return result
 }
 
-// Build retains an execution timeline and an exact captured input checkpoint for
+// Build retains an execution timeline and an semantic input checkpoint for
 // every source record. Causal ancestry and representation fidelity are separate.
 func Build(events []observer.Event, options Options, initial []Diagnostic) (*Document, error) {
 	if err := options.Validate(); err != nil {
 		return nil, err
 	}
-	b := builder{assets: map[string]Asset{}, imageMediaType: options.ImageMediaType, calls: map[string][]int{}, inputContexts: map[string]any{}, totals: map[string]any{}, diagnostics: initial}
+	b := builder{assets: map[string]Asset{}, imageMediaType: options.ImageMediaType, calls: map[string][]int{}, totals: map[string]any{}, diagnostics: initial}
 	b.document = Document{SchemaVersion: "ATIF-v" + Version, SessionID: options.RunID, Agent: Agent{Name: options.Metadata.Name, Version: options.Metadata.Version}, Steps: []Step{}}
 	if b.document.Agent.Name == "" {
 		b.document.Agent.Name = "unknown"
@@ -109,7 +103,7 @@ func Build(events []observer.Event, options Options, initial []Diagnostic) (*Doc
 		for i := range messages {
 			messages[i].identity = fingerprint(messages[i])
 		}
-		contextID := b.captureContext(event, messages)
+		contextID := b.captureContext(event)
 		match := b.matchContext(event, messages, contextID)
 		if index == 0 {
 			for _, m := range messages {
@@ -164,8 +158,7 @@ func Build(events []observer.Event, options Options, initial []Diagnostic) (*Doc
 			meta["input_context_id"] = contextID
 			meta["input_boundary_step_id"] = boundaryID
 			meta["response_status"] = event.ResponseStatus
-			meta["error"] = event.Error
-			meta["response"] = decodeBody(event.ResponseJSON, event.ResponseBody)
+			meta["transport_error"] = event.Error != nil
 			meta["metrics"] = metrics
 			b.document.Steps = append(b.document.Steps, Step{ID: len(b.document.Steps) + 1, Source: "system", Message: "Observed LLM operation: " + kind, Extra: map[string]any{Namespace: meta}})
 			if failed {
@@ -176,7 +169,7 @@ func Build(events []observer.Event, options Options, initial []Diagnostic) (*Doc
 		if meaningful {
 			context = append(context, response)
 		}
-		candidate := contextCandidate{record: entry.record, exchangeID: event.ExchangeID, responseID: responseID, branch: match.branch, completed: event.CompletedAtMS, messages: context, contextID: contextID, responseText: textOf(response.value())}
+		candidate := contextCandidate{record: entry.record, exchangeID: event.ExchangeID, responseID: responseID, branch: match.branch, completed: event.CompletedAtMS, messages: context, contextID: contextID, configurationID: digestJSON(contextConfiguration(object(event.RequestJSON))), responseText: textOf(response.value())}
 		if event.ContextMetadata != nil {
 			candidate.conversation = event.ContextMetadata.ConversationID
 			candidate.agent = event.ContextMetadata.AgentID
@@ -215,7 +208,7 @@ func Build(events []observer.Event, options Options, initial []Diagnostic) (*Doc
 	if state == "" {
 		state = "unknown"
 	}
-	b.document.Extra = map[string]any{Namespace: map[string]any{"exporter_version": 2, "source": "events.jsonl", "state": state, "scope": "captured_llm_requests_and_responses", "snapshot": state != "stopped", "reconstruction_complete": len(problems) == 0, "captured_input_fidelity": len(problems) == 0, "causal_relationships": "evidence_only", "event_count": len(events), "diagnostics": b.diagnostics, "unmapped": b.fragments, "input_contexts": b.inputContexts, "context_contract": "ordered_context_messages_v1; exact provider request is input_contexts[id].request; provider-side transforms are not observed"}}
+	b.document.Extra = map[string]any{Namespace: map[string]any{"exporter_version": 3, "source": "events.jsonl", "state": state, "scope": "captured_llm_requests_and_responses", "snapshot": state != "stopped", "reconstruction_complete": len(problems) == 0, "semantic_projection_complete": len(problems) == 0, "causal_relationships": "evidence_only", "event_count": len(events), "diagnostics": b.diagnostics, "context_contract": "ordered_context_messages_v1; semantic ATIF projection only; original request parameters and provider envelopes remain in events.jsonl"}}
 	return &b.document, nil
 }
 
@@ -240,7 +233,7 @@ func (b *builder) add(m message, observed bool, event observer.Event) {
 				return
 			}
 		}
-		step.Observation.Results = append(step.Observation.Results, Result{CallID: m.resultID, Content: m.value(), Extra: map[string]any{Namespace: map[string]any{"observed_in_exchange": b.exchange, "observed_in_record": b.recordIndex, "provider_result": m.raw}}})
+		step.Observation.Results = append(step.Observation.Results, Result{CallID: m.resultID, Content: m.value(), Extra: map[string]any{Namespace: map[string]any{"observed_in_exchange": b.exchange, "observed_in_record": b.recordIndex}}})
 		return
 	}
 	step := Step{ID: len(b.document.Steps) + 1, Source: m.role, Message: m.value()}

@@ -4,7 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
-- Preserve every captured request through standard ATIF context checkpoints and exact typed input manifests, with evidence-based context relationships and operational records.
+- Remove copied source payloads and full request manifests from ATIF extra; retain semantic context checkpoints and lightweight diagnostics/provenance. Exact provider replay now requires events.jsonl.
+
+- Preserve semantic request context through standard ATIF checkpoints, with evidence-based context relationships and operational records.
 - Export validated standard image parts with deduplicated resources, portable JSON/ZIP and run-scoped HTTP resource retrieval.
 - Capture optional producer context hints and stable response exchange IDs without forwarding reserved headers.
 

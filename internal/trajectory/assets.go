@@ -47,8 +47,7 @@ func checkedAssetKeys(assets map[string]Asset) ([]string, error) {
 	return keys, nil
 }
 
-// WithAssetPaths copies only the standard content locations. Raw input_context
-// manifests and all other extension metadata are deliberately left unchanged.
+// WithAssetPaths copies standard content locations without mutating metadata.
 func (d *Document) WithAssetPaths(prefix string) (*Document, error) {
 	if d == nil {
 		return nil, fmt.Errorf("missing trajectory document")

@@ -84,9 +84,10 @@ func TestPruningParametersAndTemporalCandidates(t *testing.T) {
 	if boundaryFor(doc, 2).Extra["context_management"].(map[string]any)["type"] != "pruning" {
 		t.Fatal("pruned context not detected")
 	}
-	if boundaryFor(doc, 2).Extra[Namespace].(map[string]any)["context_configuration"].(map[string]any)["seed"].(json.Number).String() != "9007199254740995" {
-		t.Fatal("parameter integer rounded")
+	if boundaryFor(doc, 2).Extra[Namespace].(map[string]any)["configuration_id"] != digestJSON(contextConfiguration(object(b.RequestJSON))) {
+		t.Fatal("configuration identity changed")
 	}
+
 	a.StartedAtMS = 1
 	a.CompletedAtMS = 10
 	b.StartedAtMS = 2
@@ -106,7 +107,7 @@ func TestRawBodyDifferencesAndStreamLargeInteger(t *testing.T) {
 	a.RequestBody = &rawA
 	b.RequestBody = &rawB
 	doc := build(t, []observer.Event{a, b}, true)
-	if len(doc.Extra[Namespace].(map[string]any)["input_contexts"].(map[string]any)) != 2 {
+	if boundaryFor(doc, 1).Extra[Namespace].(map[string]any)["input_context_id"] == boundaryFor(doc, 2).Extra[Namespace].(map[string]any)["input_context_id"] {
 		t.Fatal("different raw bodies collapsed")
 	}
 	a.ResponseJSON = nil

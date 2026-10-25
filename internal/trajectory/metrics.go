@@ -71,9 +71,6 @@ func (b *builder) metrics(event observer.Event, usage map[string]any) map[string
 	if inputOK || outputOK || cachedOK {
 		b.metricsCount++
 	}
-	if len(usage) > 0 {
-		extra["provider_usage"] = usage
-	}
 	cost := object(event.Normalized["cost"])
 	if amount, ok := number(cost["total_cost_usd"]); ok {
 		if amount >= 0 && !math.IsNaN(amount) && !math.IsInf(amount, 0) {

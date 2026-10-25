@@ -77,7 +77,7 @@ func TestStandardMixedImages(t *testing.T) {
 		t.Fatal("tool image/text changed")
 	}
 }
-func TestStandardTextIsExactAndUnsupportedRetained(t *testing.T) {
+func TestStandardTextIsExactAndUnsupportedDiagnosed(t *testing.T) {
 	b := builder{}
 	got := b.standardContent([]any{map[string]any{"type": "text", "text": "a"}, map[string]any{"type": "text", "text": " b"}})
 	if textOf(got) != "a b" {
@@ -89,8 +89,8 @@ func TestStandardTextIsExactAndUnsupportedRetained(t *testing.T) {
 	for _, value := range []any{42, true, map[string]any{"bad": "object"}, []any{23, map[string]any{"type": "audio"}}} {
 		b.standardContent(value)
 	}
-	if len(b.fragments) != 5 {
-		t.Fatalf("unsupported values missing: %#v", b.fragments)
+	if len(b.diagnostics) != 5 {
+		t.Fatalf("unsupported values missing: %#v", b.diagnostics)
 	}
 }
 func TestStandardImageFormatsAndFailures(t *testing.T) {
@@ -105,8 +105,8 @@ func TestStandardImageFormatsAndFailures(t *testing.T) {
 	tests := []map[string]any{imageBlock(syntheticImage(t, "png"), "image/jpeg"), imageBlock([]byte("broken"), "image/png"), imageBlock(syntheticImage(t, "png"), "image/svg+xml"), {"type": "input_image", "image_url": "file:///etc/passwd"}, {"type": "input_image", "image_url": "https://example.invalid/opaque"}, imageBlock(make([]byte, MaxImageBytes+1), "image/png"), {"type": "image", "source": map[string]any{"type": "base64", "media_type": "image/png", "data": "!!!"}}}
 	for i, value := range tests {
 		b := builder{}
-		if hasContent(b.standardContent([]any{value})) || len(b.assets) != 0 || len(b.fragments) == 0 {
-			t.Fatalf("invalid image %d not retained: %#v", i, b)
+		if hasContent(b.standardContent([]any{value})) || len(b.assets) != 0 || len(b.diagnostics) == 0 {
+			t.Fatalf("invalid image %d not diagnosed: %#v", i, b)
 		}
 	}
 	large := image.NewGray(image.Rect(0, 0, MaxImageDimension+1, 1))
@@ -114,7 +114,7 @@ func TestStandardImageFormatsAndFailures(t *testing.T) {
 	png.Encode(&out, large)
 	b := builder{}
 	b.standardContent([]any{imageBlock(out.Bytes(), "image/png")})
-	if len(b.fragments) != 1 {
+	if len(b.diagnostics) != 1 {
 		t.Fatal("oversized dimension accepted")
 	}
 }

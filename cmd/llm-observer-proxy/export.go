@@ -22,7 +22,7 @@ func runExport(args []string) error {
 	flags.StringVar(&options.RunID, "run-id", "", "run ID (default: from source events)")
 	flags.StringVar(&options.Metadata.Name, "agent-name", "", "agent name (default: unknown)")
 	flags.StringVar(&options.Metadata.Version, "agent-version", "", "agent version (default: unknown)")
-	flags.BoolVar(&options.Strict, "strict", false, "reject incomplete or ambiguous reconstruction")
+	flags.BoolVar(&options.Strict, "strict", false, "reject unsupported or lossy semantic projection")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
